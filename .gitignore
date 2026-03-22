@@ -1,0 +1,21 @@
+venv/
+__pycache__/
+*.pyc
+
+# User data (generated at runtime)
+data/config.json
+data/theater.json
+data/playlists.json
+data/folder_layouts.json
+data/thumbnails/
+data/cache/
+
+# System
+.DS_Store
+nul
+*.log
+
+# IDE
+.vscode/
+.idea/
+.claude/
