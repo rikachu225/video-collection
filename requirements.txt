@@ -1,5 +1,5 @@
 flask==3.1.0
-flask-cors==5.0.1
+flask-cors==6.0.2
 waitress==3.0.2
 pywebview==5.3.2
 yt-dlp
