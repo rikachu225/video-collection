@@ -1,0 +1,82 @@
+name: Weekly Release Check
+
+on:
+  schedule:
+    # Every Monday at 9:00 AM UTC
+    - cron: "0 9 * * 1"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  check-and-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Full history for changelog
+
+      - name: Get latest tag
+        id: latest_tag
+        run: |
+          TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "Latest tag: $TAG"
+
+      - name: Check for changes since last tag
+        id: changes
+        run: |
+          LATEST_TAG=${{ steps.latest_tag.outputs.tag }}
+          COMMIT_COUNT=$(git rev-list --count ${LATEST_TAG}..HEAD 2>/dev/null || git rev-list --count HEAD)
+          echo "commits=$COMMIT_COUNT" >> $GITHUB_OUTPUT
+          echo "Commits since $LATEST_TAG: $COMMIT_COUNT"
+
+          if [ "$COMMIT_COUNT" -gt 0 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Calculate next version
+        if: steps.changes.outputs.has_changes == 'true'
+        id: version
+        run: |
+          LATEST=${{ steps.latest_tag.outputs.tag }}
+          # Strip 'v' prefix
+          VERSION=${LATEST#v}
+          # Split into parts
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
+          # Bump patch
+          PATCH=$((PATCH + 1))
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "Next version: $NEW_VERSION"
+
+      - name: Generate changelog
+        if: steps.changes.outputs.has_changes == 'true'
+        id: changelog
+        run: |
+          LATEST_TAG=${{ steps.latest_tag.outputs.tag }}
+          {
+            echo 'changelog<<EOF'
+            echo "## Changes since ${LATEST_TAG}"
+            echo ""
+            git log ${LATEST_TAG}..HEAD --pretty=format:"- %s (%h)" 2>/dev/null || git log --pretty=format:"- %s (%h)"
+            echo ""
+            echo 'EOF'
+          } >> $GITHUB_OUTPUT
+
+      - name: Create release
+        if: steps.changes.outputs.has_changes == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.version }}
+          name: ${{ steps.version.outputs.version }}
+          body: |
+            ${{ steps.changelog.outputs.changelog }}
+
+            ---
+            🤖 Automated weekly release
+          draft: false
+          prerelease: false

@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>My Collection</title><!-- updated dynamically by JS -->
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/lucide-static@0.344.0/font/lucide.min.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div class="logo">
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="url(#cyanGrad)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <defs><linearGradient id="cyanGrad" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#00f0ff"/><stop offset="100%" stop-color="#b000ff"/></linearGradient></defs>
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <span class="logo-text" id="brand-site-name">MY DOLLS</span>
+        </div>
+        <button class="sidebar-toggle" id="btn-sidebar-toggle" data-tooltip="Toggle Sidebar">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="11 17 6 12 11 7"/><polyline points="18 17 13 12 18 7"/></svg>
+        </button>
+      </div>
+
+      <nav class="sidebar-nav">
+        <button class="nav-btn active" data-view="browse" data-tooltip="Browse Library">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </button>
+        <button class="nav-btn" data-view="theater" data-tooltip="My Theater" id="nav-theater-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M10 12l4 2.5-4 2.5V12z"/></svg>
+        </button>
+        <button class="nav-btn" data-view="playlists" data-tooltip="Playlists">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        </button>
+      </nav>
+
+      <div class="sidebar-divider"></div>
+
+      <div id="folder-list" class="folder-list">
+        <!-- Populated by JS -->
+      </div>
+
+      <div class="sidebar-footer">
+        <span class="footer-stats" id="stats"></span>
+        <div class="footer-actions">
+          <button class="settings-btn" id="btn-settings" data-tooltip="Settings">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          </button>
+          <button class="shutdown-btn" id="btn-shutdown" data-tooltip="Stop Server & Exit">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18.36 6.64a9 9 0 1 1-12.73 0"/><line x1="12" y1="2" x2="12" y2="12"/></svg>
+          </button>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main id="main">
+      <!-- Top Bar -->
+      <header id="topbar">
+        <div class="breadcrumb" id="breadcrumb">
+          <span class="crumb-home" data-tooltip="All Folders">Library</span>
+        </div>
+        <div class="topbar-actions">
+          <div id="browse-media-controls" style="display:none;">
+            <button class="cyber-btn" id="btn-play-all-browse" data-tooltip="Play All Previews">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Play All
+            </button>
+            <button class="cyber-btn" id="btn-pause-all-browse" data-tooltip="Pause All Previews">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              Pause All
+            </button>
+            <button class="cyber-btn" id="btn-unmute-all-browse" data-tooltip="Unmute All Previews">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              Unmute All
+            </button>
+            <button class="cyber-btn" id="btn-mute-all-browse" data-tooltip="Mute All Previews">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+              Mute All
+            </button>
+            <button class="cyber-btn accent" id="btn-workspace-browse" data-tooltip="Open Folder in Workspace">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              Workspace
+            </button>
+            <button class="cyber-btn" id="btn-download-url-folder" style="display:none;" data-tooltip="Download Video from URL">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download URL
+            </button>
+            <button class="cyber-btn" id="btn-import-video" style="display:none;" data-tooltip="Import Local Video">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
+              Import
+            </button>
+          </div>
+          <div class="search-box" id="search-box">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="search-input" placeholder="Search videos..." />
+          </div>
+        </div>
+      </header>
+
+      <!-- Browse View -->
+      <section id="view-browse" class="view active">
+        <div id="video-grid" class="video-grid"></div>
+      </section>
+
+      <!-- Single Player View -->
+      <section id="view-player" class="view">
+        <div class="player-wrapper">
+          <div class="player-controls-top">
+            <button class="icon-btn" id="btn-back" data-tooltip="Back to Grid">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+            </button>
+            <span class="player-title" id="player-title"></span>
+            <button class="icon-btn" id="btn-add-theater" data-tooltip="Add to Theater"><!-- tooltip updated by JS -->
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            </button>
+          </div>
+          <video id="main-player" controls autoplay>
+            <source id="player-source" src="" type="video/mp4">
+          </video>
+        </div>
+      </section>
+
+      <!-- Theater View -->
+      <section id="view-theater" class="view">
+        <div class="theater-header">
+          <h2>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M10 12l4 2.5-4 2.5V12z"/></svg>
+            <span id="brand-theater-heading">My Theater</span>
+          </h2>
+          <div class="theater-actions">
+            <button class="cyber-btn" id="btn-play-all" data-tooltip="Play All Clips">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+              Play All
+            </button>
+            <button class="cyber-btn" id="btn-stop-all" data-tooltip="Pause All Clips">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+              Pause All
+            </button>
+            <button class="cyber-btn" id="btn-unmute-all-theater" data-tooltip="Unmute All Clips">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
+              Unmute All
+            </button>
+            <button class="cyber-btn" id="btn-mute-all-theater" data-tooltip="Mute All Clips">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+              Mute All
+            </button>
+            <button class="cyber-btn" id="btn-add-url" data-tooltip="Add Video URL">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+              Add URL
+            </button>
+            <button class="cyber-btn accent" id="btn-workspace" data-tooltip="Enter Fullscreen Workspace">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>
+              Workspace
+            </button>
+            <button class="cyber-btn accent" id="btn-save-playlist" data-tooltip="Save as Playlist">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+              Save Playlist
+            </button>
+            <button class="cyber-btn danger" id="btn-clear-theater" data-tooltip="Clear All Clips">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              Clear
+            </button>
+          </div>
+        </div>
+        <div id="theater-grid" class="theater-grid"></div>
+        <div id="theater-empty" class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M10 12l4 2.5-4 2.5V12z"/></svg>
+          <p id="brand-theater-empty">No clips in your sanctuary yet</p>
+          <p class="hint">Browse your library and click <strong>+</strong> to add clips</p>
+        </div>
+      </section>
+
+      <!-- Playlists View -->
+      <section id="view-playlists" class="view">
+        <div class="theater-header">
+          <h2>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+            Saved Playlists
+          </h2>
+        </div>
+        <div id="playlists-list" class="playlists-list"></div>
+        <div id="playlists-empty" class="empty-state">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          <p>No saved playlists</p>
+          <p class="hint" id="brand-playlists-hint">Add clips to your Theater and save them as a playlist</p>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Workspace Fullscreen Overlay -->
+  <div id="workspace-overlay" class="workspace-overlay hidden">
+    <div class="workspace-toolbar">
+      <div class="workspace-title">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M10 12l4 2.5-4 2.5V12z"/></svg>
+        <span>Workspace Mode</span>
+      </div>
+      <div class="workspace-controls">
+        <button class="cyber-btn" id="ws-play-all" data-tooltip="Play All">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+        </button>
+        <button class="cyber-btn" id="ws-pause-all" data-tooltip="Pause All">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+        </button>
+        <button class="cyber-btn" id="ws-unmute-all" data-tooltip="Unmute All">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>
+        </button>
+        <button class="cyber-btn" id="ws-mute-all" data-tooltip="Mute All">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>
+        </button>
+        <button class="cyber-btn" id="ws-volume-all" data-tooltip="Volume Boost All">100%</button>
+        <button class="cyber-btn accent" id="ws-save-layout" data-tooltip="Save Panel Layout">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+        </button>
+        <button class="cyber-btn" id="ws-tile" data-tooltip="Auto-Tile Layout">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+        </button>
+        <button class="cyber-btn" id="ws-toggle-fullscreen" data-tooltip="Toggle Fullscreen">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button class="cyber-btn danger" id="ws-exit" data-tooltip="Exit Workspace (Esc)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          Exit
+        </button>
+      </div>
+    </div>
+    <div id="workspace-canvas" class="workspace-canvas">
+      <!-- Draggable/resizable video panels injected here by JS -->
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div id="toast-container"></div>
+
+  <!-- Settings Modal -->
+  <div id="settings-overlay" class="modal-overlay hidden">
+    <div class="modal settings-modal">
+      <div class="settings-header">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+          Settings
+        </h3>
+        <button class="icon-btn" id="settings-close" data-tooltip="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="settings-section">
+        <h4>Personalization</h4>
+        <p class="settings-hint">Customize the names shown in the app.</p>
+        <div class="settings-branding">
+          <div class="branding-field">
+            <label for="branding-site-name">Site Name</label>
+            <input type="text" id="branding-site-name" placeholder="My Collection" />
+          </div>
+          <div class="branding-field">
+            <label for="branding-theater-name">Theater Name</label>
+            <input type="text" id="branding-theater-name" placeholder="My Theater" />
+          </div>
+          <button class="cyber-btn accent" id="btn-save-branding">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+            Save Names
+          </button>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h4>Media Sources</h4>
+        <p class="settings-hint">Add root folders containing video subfolders. Each subfolder appears in the sidebar.</p>
+        <div id="sources-list" class="sources-list"></div>
+      </div>
+      <div class="settings-add-source">
+        <input type="text" id="source-name-input" placeholder="Name (e.g., My Collection)" />
+        <div class="source-path-row">
+          <input type="text" id="source-path-input" placeholder="Click Browse or paste a path" />
+          <button class="cyber-btn" id="btn-browse-folder" data-tooltip="Browse for folder">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Browse
+          </button>
+        </div>
+        <button class="cyber-btn accent" id="btn-add-source">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+          Add Source
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Folder Picker Modal -->
+  <div id="folder-picker-overlay" class="modal-overlay hidden">
+    <div class="modal folder-picker-modal">
+      <div class="folder-picker-header">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          Select Folder
+        </h3>
+        <button class="icon-btn" id="folder-picker-close" data-tooltip="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="folder-picker-breadcrumb" id="folder-picker-path"></div>
+      <div class="folder-picker-list" id="folder-picker-list">
+        <!-- Populated by JS -->
+      </div>
+      <div class="folder-picker-actions">
+        <button class="cyber-btn" id="folder-picker-cancel">Cancel</button>
+        <button class="cyber-btn accent" id="folder-picker-select">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+          Select This Folder
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save Playlist Modal -->
+  <div id="modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Save Playlist</h3>
+      <input type="text" id="playlist-name-input" placeholder="Enter playlist name..." />
+      <div class="modal-actions">
+        <button class="cyber-btn" id="modal-cancel">Cancel</button>
+        <button class="cyber-btn accent" id="modal-save">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add URL Modal (Theater) -->
+  <div id="url-modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Add Video URL</h3>
+      <input type="text" id="url-input" placeholder="Paste a video URL (YouTube, TikTok, X, or direct link)" />
+      <input type="text" id="url-name-input" placeholder="Clip name (optional)" />
+      <div id="url-download-progress" class="url-progress hidden">
+        <div class="url-progress-spinner"></div>
+        <span>Downloading video... this may take a moment</span>
+      </div>
+      <div class="modal-actions">
+        <button class="cyber-btn" id="url-modal-cancel">Cancel</button>
+        <button class="cyber-btn accent" id="url-modal-add">Add</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- New Collection Modal -->
+  <div id="new-collection-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>New Collection</h3>
+      <input type="text" id="collection-name-input" placeholder="Collection name" />
+      <div class="collection-path-row">
+        <input type="text" id="collection-path-input" placeholder="Choose location..." readonly />
+        <button class="cyber-btn" id="collection-browse-btn">Browse</button>
+      </div>
+      <div class="modal-actions">
+        <button class="cyber-btn" id="collection-modal-cancel">Cancel</button>
+        <button class="cyber-btn accent" id="collection-modal-create">Create</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Download URL to Folder Modal -->
+  <div id="folder-dl-modal-overlay" class="modal-overlay hidden">
+    <div class="modal">
+      <h3>Download Video to Folder</h3>
+      <input type="text" id="folder-dl-url-input" placeholder="Paste a video URL (YouTube, TikTok, X, etc.)" />
+      <input type="text" id="folder-dl-name-input" placeholder="File name (optional, uses video title)" />
+      <div id="folder-dl-progress" class="url-progress hidden">
+        <div class="url-progress-spinner"></div>
+        <span>Downloading video... this may take a moment</span>
+      </div>
+      <div class="modal-actions">
+        <button class="cyber-btn" id="folder-dl-cancel">Cancel</button>
+        <button class="cyber-btn accent" id="folder-dl-download">Download</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Import Videos Modal -->
+  <div id="import-modal-overlay" class="modal-overlay hidden">
+    <div class="modal import-modal">
+      <div class="import-modal-header">
+        <h3>
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          Import Videos
+        </h3>
+        <button class="icon-btn" id="import-modal-close" data-tooltip="Close">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div class="folder-picker-breadcrumb" id="import-picker-path"></div>
+      <div class="folder-picker-list" id="import-picker-list">
+        <!-- Populated by JS: dirs + video files with checkboxes -->
+      </div>
+      <div class="import-modal-actions">
+        <span class="import-selected-count" id="import-selected-count">0 selected</span>
+        <button class="cyber-btn" id="import-modal-cancel">Cancel</button>
+        <button class="cyber-btn accent" id="import-modal-import" disabled>Import Selected</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

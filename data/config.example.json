@@ -1,0 +1,14 @@
+{
+  "siteName": "My Collection",
+  "theaterName": "My Theater",
+  "mediaPaths": [
+    {
+      "path": "C:\\Users\\You\\Videos",
+      "name": "My Videos"
+    }
+  ],
+  "excludedFolders": [
+    "Scripts",
+    "scripts"
+  ]
+}
