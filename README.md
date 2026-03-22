@@ -125,7 +125,7 @@ video-collection/
 
 ## 📝 License
 
-MIT License — do whatever you want with it.
+**AGPL-3.0** — Free to use, modify, and self-host. If you deploy a modified version as a service, you must open-source your changes. You may not sell this software or offer it as a paid service. See [LICENSE](LICENSE).
 
 ---
 
