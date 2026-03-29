@@ -29,16 +29,11 @@ if exist "data\config.json" (
     for /f "usebackq delims=" %%a in (`python -c "import json; print(json.load(open('data/config.json')).get('siteName','Media Center'))"`) do set "SITE_NAME=%%a"
 )
 
-title !SITE_NAME!
+title !SITE_NAME! Media Center
 
 echo.
-echo  +========================================+
-echo  ^|   !SITE_NAME! - Launch
-echo  +========================================+
+echo  [38;2;80;80;80m  Initializing !SITE_NAME! Media Center...[0m
 echo.
 
-:: Start server
-echo  Starting server on http://localhost:7777 ...
-echo  Press Ctrl+C to stop.
-echo.
+:: Start server (cyberpunk banner is rendered by server.py)
 python server.py 7777

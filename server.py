@@ -1090,18 +1090,37 @@ if __name__ == "__main__":
     sources = config.get("mediaPaths", [])
     site_name = config.get("siteName", "My Collection")
 
-    print(f"\n  {site_name} Media Center")
-    print(f"  ────────────────────────────")
+    # ── Cyberpunk startup banner ──────────────────────────────────────
+    E  = "\033[0m"       # reset
+    P  = "\033[38;2;255;97;166m"   # pink
+    C  = "\033[38;2;122;246;255m"  # cyan
+    G  = "\033[38;2;0;255;179m"    # green
+    Y  = "\033[38;2;255;247;90m"   # yellow
+    D  = "\033[38;2;80;80;80m"     # dim
+    W  = "\033[38;2;255;255;255m"  # white
+    R  = "\033[38;2;255;0;110m"    # red
+
+    print()
+    print(f"  {D}╔══════════════════════════════════════════╗{E}")
+    print(f"  {D}║{E}  {P}♥{E}  {W}{site_name} Media Center{E}              {D}║{E}")
+    print(f"  {D}╠══════════════════════════════════════════╣{E}")
+
     if sources:
         for i, src in enumerate(sources):
-            status = "OK" if Path(src["path"]).exists() else "NOT FOUND"
-            print(f"  Source {i}: {src.get('name', 'Unnamed')} [{status}]")
-            print(f"           {src['path']}")
+            exists = Path(src["path"]).exists()
+            icon   = f"{G}●{E}" if exists else f"{R}●{E}"
+            label  = f"{G}ONLINE{E}" if exists else f"{R}OFFLINE{E}"
+            name   = src.get("name", "Unnamed")
+            print(f"  {D}║{E}  {icon}  {W}{name}{E} {D}─{E} {label}")
+            print(f"  {D}║{E}     {D}{src['path']}{E}")
     else:
-        print(f"  No media sources configured.")
-        print(f"  Add sources via Settings in the web UI.")
-    print(f"  Server:     http://localhost:{port}")
-    print(f"  ────────────────────────────\n")
+        print(f"  {D}║{E}  {Y}⚠{E}  {Y}No media sources configured{E}")
+        print(f"  {D}║{E}     {D}Add sources via Settings in the web UI{E}")
+
+    print(f"  {D}╠══════════════════════════════════════════╣{E}")
+    print(f"  {D}║{E}  {C}⚡{E} {W}http://localhost:{port}{E}")
+    print(f"  {D}╚══════════════════════════════════════════╝{E}")
+    print()
 
     from waitress import serve
     serve(app, host="0.0.0.0", port=port, threads=8)

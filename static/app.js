@@ -550,6 +550,9 @@ async function playVideo(video) {
   // Create the popup panel
   const popup = document.createElement("div");
   popup.className = "video-popup video-popup-draggable";
+  const popupLoopStartVal = video.loopStart != null ? formatTime(video.loopStart) : "";
+  const popupLoopEndVal   = video.loopEnd   != null ? formatTime(video.loopEnd)   : "";
+
   popup.innerHTML = `
     <div class="video-popup-header">
       <span class="video-popup-title">${video.folder} / ${video.name}</span>
@@ -564,6 +567,19 @@ async function playVideo(video) {
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
         </button>
       </div>
+    </div>
+    <div class="popup-loop-bar">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+      <span class="popup-loop-label">Loop</span>
+      <input type="text" class="loop-input" data-field="start" placeholder="0:00" value="${popupLoopStartVal}" data-tooltip="Loop start (m:ss)" />
+      <span class="popup-loop-dash">→</span>
+      <input type="text" class="loop-input" data-field="end" placeholder="0:00" value="${popupLoopEndVal}" data-tooltip="Loop end (m:ss)" />
+      <button class="icon-btn-xs" data-action="popup-set-loop" data-tooltip="Apply Loop">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+      </button>
+      <button class="icon-btn-xs" data-action="popup-clear-loop" data-tooltip="Clear Loop">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
     </div>
     <video controls autoplay src="${getVideoSrc(video)}"></video>
     <div class="popup-resize-handle" data-resize="se"></div>
@@ -690,13 +706,60 @@ async function playVideo(video) {
     btn.textContent = labels[next];
   });
 
-  // Apply loop from sanctuary clip if set
+  // Apply loop from clip if pre-set (loop is already in inputs from template)
   {
     const vid = popup.querySelector("video");
     if (video.loopStart != null && video.loopEnd != null) {
       setupVideoLoop(vid, video.loopStart, video.loopEnd);
     }
   }
+
+  // Popup loop set (persists for theater clips)
+  popup.querySelector('[data-action="popup-set-loop"]').addEventListener("click", async () => {
+    const vid = popup.querySelector("video");
+    const startSec = parseTime(popup.querySelector('.loop-input[data-field="start"]').value);
+    const endSec   = parseTime(popup.querySelector('.loop-input[data-field="end"]').value);
+    if (startSec === null || endSec === null || endSec <= startSec) {
+      toast("Invalid loop times. Use m:ss (e.g. 1:20)", "error");
+      return;
+    }
+    setupVideoLoop(vid, startSec, endSec);
+
+    // Persist if it's a theater clip
+    const tc = state.theaterClips.find((c) => c.path === video.path);
+    if (tc) {
+      tc.loopStart = startSec;
+      tc.loopEnd   = endSec;
+      await api.post("/api/theater/loop", { path: video.path, loopStart: startSec, loopEnd: endSec }).catch(() => {});
+      if (state.loadedPlaylistName) {
+        await api.post("/api/playlists", { name: state.loadedPlaylistName, clips: state.theaterClips }).catch(() => {});
+      }
+    }
+    toast(`Loop set: ${formatTime(startSec)} → ${formatTime(endSec)}`, "success");
+  });
+
+  // Popup loop clear (persists for theater clips)
+  popup.querySelector('[data-action="popup-clear-loop"]').addEventListener("click", async () => {
+    const vid = popup.querySelector("video");
+    if (vid._loopHandler) {
+      vid.removeEventListener("timeupdate", vid._loopHandler);
+      vid._loopHandler = null;
+    }
+    popup.querySelector('.loop-input[data-field="start"]').value = "";
+    popup.querySelector('.loop-input[data-field="end"]').value   = "";
+
+    // Persist clear for theater clips
+    const tc = state.theaterClips.find((c) => c.path === video.path);
+    if (tc) {
+      tc.loopStart = null;
+      tc.loopEnd   = null;
+      await api.post("/api/theater/loop", { path: video.path, loopStart: null, loopEnd: null }).catch(() => {});
+      if (state.loadedPlaylistName) {
+        await api.post("/api/playlists", { name: state.loadedPlaylistName, clips: state.theaterClips }).catch(() => {});
+      }
+    }
+    toast("Loop cleared", "info");
+  });
 
   function onEsc(e) {
     if (e.key === "Escape" && !state.workspaceOpen) closePopup();
@@ -982,6 +1045,7 @@ $("#btn-clear-theater").addEventListener("click", async () => {
 
 let dragState = null;
 let resizeState = null;
+let scrubState = null; // { video, track } — active scrubber drag
 
 async function openWorkspace(clips) {
   const workspaceClips = clips || state.theaterClips;
@@ -1094,6 +1158,8 @@ function buildWorkspacePanels() {
     panel.dataset.path = clip.path;
 
     const hasLoop = clip.loopStart !== null && clip.loopEnd !== null;
+    const loopStartDisplay = hasLoop ? formatTime(clip.loopStart) : "";
+    const loopEndDisplay   = hasLoop ? formatTime(clip.loopEnd)   : "";
 
     panel.innerHTML = `
       <div class="ws-panel-titlebar">
@@ -1114,6 +1180,23 @@ function buildWorkspacePanels() {
         </div>
       </div>
       <video class="ws-video" src="${prefetchCache.get(clip.path) || getVideoSrc(clip)}" loop muted preload="${prefetchCache.get(clip.path) ? 'auto' : 'none'}"></video>
+      <div class="ws-scrubber-bar">
+        <div class="ws-scrubber-track">
+          <div class="ws-scrubber-fill"></div>
+          <div class="ws-scrubber-loop-region"></div>
+        </div>
+        <div class="ws-scrubber-meta">
+          <span class="ws-scrubber-time">0:00 / 0:00</span>
+          <div class="ws-loop-row">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="17 1 21 5 17 9"/><path d="M3 11V9a4 4 0 0 1 4-4h14"/><polyline points="7 23 3 19 7 15"/><path d="M21 13v2a4 4 0 0 1-4 4H3"/></svg>
+            <input type="text" class="ws-loop-input" data-field="start" placeholder="0:00" value="${loopStartDisplay}" />
+            <span class="ws-loop-dash">→</span>
+            <input type="text" class="ws-loop-input" data-field="end" placeholder="0:00" value="${loopEndDisplay}" />
+            <button class="ws-loop-apply" data-action="ws-set-loop" data-tooltip="Apply Loop">✓</button>
+            <button class="ws-loop-clear" data-action="ws-clear-loop" data-tooltip="Clear Loop">✗</button>
+          </div>
+        </div>
+      </div>
       <div class="ws-panel-resize-handle ws-resize-tl" data-resize="tl"></div>
       <div class="ws-panel-resize-handle ws-resize-tr" data-resize="tr"></div>
       <div class="ws-panel-resize-handle ws-resize-bl" data-resize="bl"></div>
@@ -1128,6 +1211,104 @@ function buildWorkspacePanels() {
       video.currentTime = clip.loopStart;
     }
 
+    // ── Scrubber ──────────────────────────────────────────────
+    const scrubTrack   = panel.querySelector(".ws-scrubber-track");
+    const scrubFill    = panel.querySelector(".ws-scrubber-fill");
+    const scrubTimeEl  = panel.querySelector(".ws-scrubber-time");
+    const loopRegionEl = panel.querySelector(".ws-scrubber-loop-region");
+
+    function updateScrubberLoop() {
+      if (clip.loopStart !== null && clip.loopEnd !== null && video.duration) {
+        const dur = video.duration;
+        loopRegionEl.style.left  = `${(clip.loopStart / dur) * 100}%`;
+        loopRegionEl.style.width = `${((clip.loopEnd - clip.loopStart) / dur) * 100}%`;
+      } else {
+        loopRegionEl.style.width = "0";
+      }
+    }
+
+    video.addEventListener("timeupdate", () => {
+      if (!video.duration) return;
+      const pct = (video.currentTime / video.duration) * 100;
+      scrubFill.style.width = `${pct}%`;
+      scrubTimeEl.textContent = `${formatTime(video.currentTime)} / ${formatTime(video.duration)}`;
+    });
+
+    video.addEventListener("loadedmetadata", () => {
+      scrubTimeEl.textContent = `0:00 / ${formatTime(video.duration)}`;
+      updateScrubberLoop();
+    });
+
+    scrubTrack.addEventListener("mousedown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      scrubState = { video, track: scrubTrack };
+      // Seek immediately on click
+      const rect = scrubTrack.getBoundingClientRect();
+      const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+      if (video.duration) video.currentTime = pct * video.duration;
+    });
+
+    // Loop set
+    panel.querySelector('[data-action="ws-set-loop"]').addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const startInput = panel.querySelector('.ws-loop-input[data-field="start"]');
+      const endInput   = panel.querySelector('.ws-loop-input[data-field="end"]');
+      const startSec   = parseTime(startInput.value);
+      const endSec     = parseTime(endInput.value);
+
+      if (startSec === null || endSec === null || endSec <= startSec) {
+        toast("Invalid loop times. Use m:ss (e.g. 1:20)", "error");
+        return;
+      }
+
+      clip.loopStart = startSec;
+      clip.loopEnd   = endSec;
+      setupVideoLoop(video, startSec, endSec);
+      updateScrubberLoop();
+
+      // Persist if this is a theater clip
+      const isTheaterClip = state.theaterClips.some((c) => c.path === clip.path);
+      if (isTheaterClip) {
+        await api.post("/api/theater/loop", { path: clip.path, loopStart: startSec, loopEnd: endSec }).catch(() => {});
+        const tc = state.theaterClips.find((c) => c.path === clip.path);
+        if (tc) { tc.loopStart = startSec; tc.loopEnd = endSec; }
+        if (state.loadedPlaylistName) {
+          await api.post("/api/playlists", { name: state.loadedPlaylistName, clips: state.theaterClips }).catch(() => {});
+        }
+      }
+      toast(`Loop set: ${formatTime(startSec)} → ${formatTime(endSec)}`, "success");
+    });
+
+    // Loop clear
+    panel.querySelector('[data-action="ws-clear-loop"]').addEventListener("click", async (e) => {
+      e.stopPropagation();
+      clip.loopStart = null;
+      clip.loopEnd   = null;
+      if (video._loopHandler) {
+        video.removeEventListener("timeupdate", video._loopHandler);
+        video._loopHandler = null;
+      }
+      panel.querySelector('.ws-loop-input[data-field="start"]').value = "";
+      panel.querySelector('.ws-loop-input[data-field="end"]').value   = "";
+      loopRegionEl.style.width = "0";
+
+      // Persist clear for theater clips
+      const isTheaterClip = state.theaterClips.some((c) => c.path === clip.path);
+      if (isTheaterClip) {
+        await api.post("/api/theater/loop", { path: clip.path, loopStart: null, loopEnd: null }).catch(() => {});
+        const tc = state.theaterClips.find((c) => c.path === clip.path);
+        if (tc) { tc.loopStart = null; tc.loopEnd = null; }
+        if (state.loadedPlaylistName) {
+          await api.post("/api/playlists", { name: state.loadedPlaylistName, clips: state.theaterClips }).catch(() => {});
+        }
+      }
+      toast("Loop cleared", "info");
+    });
+
+    // Prevent scrubber bar clicks from triggering panel drag
+    panel.querySelector(".ws-scrubber-bar").addEventListener("mousedown", (e) => e.stopPropagation());
+
     // Any click anywhere on the panel brings it to front
     panel.addEventListener("mousedown", () => {
       $$(".ws-panel").forEach((p) => p.style.zIndex = "1");
@@ -1137,7 +1318,7 @@ function buildWorkspacePanels() {
     // Drag from anywhere on the panel (except buttons, resize handle, video controls)
     panel.addEventListener("mousedown", (e) => {
       // Skip if clicking interactive elements inside panel
-      if (e.target.closest(".ws-btn, .ws-panel-resize-handle, video")) return;
+      if (e.target.closest(".ws-btn, .ws-panel-resize-handle, .ws-scrubber-bar, video")) return;
       e.preventDefault();
 
       dragState = {
@@ -1438,6 +1619,12 @@ async function saveWorkspaceLayout() {
 
 // Global mouse handlers for drag & resize
 document.addEventListener("mousemove", (e) => {
+  if (scrubState) {
+    const { video, track } = scrubState;
+    const rect = track.getBoundingClientRect();
+    const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    if (video.duration) video.currentTime = pct * video.duration;
+  }
   if (dragState) {
     const { panel, startX, startY } = dragState;
     const canvas = dom.workspaceCanvas;
@@ -1489,6 +1676,7 @@ document.addEventListener("mousemove", (e) => {
 document.addEventListener("mouseup", () => {
   dragState = null;
   resizeState = null;
+  scrubState = null;
 });
 
 // Workspace toolbar buttons
