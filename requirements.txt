@@ -3,4 +3,4 @@ flask-cors==6.0.5
 waitress==3.0.2
 pywebview==6.2.1
 yt-dlp==2026.6.9
-google-genai==1.33.0
+google-genai==2.10.0
