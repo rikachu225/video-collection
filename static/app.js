@@ -410,6 +410,10 @@ function showFolderGrid() {
   `;
   newCard.addEventListener("click", openNewCollectionModal);
   dom.videoGrid.appendChild(newCard);
+
+  // New folder-grid content — start at the top, and drop any stale browse scroll memory
+  const mainEl = $("#main");
+  if (mainEl) { mainEl.scrollTop = 0; viewScroll.browse = 0; }
 }
 
 // ── Open Folder & Show Videos ────────────────────────────────
@@ -457,6 +461,10 @@ async function openFolder(folderPath, sourceIndex) {
   const folderKey = sourceIndex != null ? `${sourceIndex}:${folderPath}` : folderPath;
   const folderPaths = state.currentVideos.map((v) => v.path);
   if (folderPaths.length > 0) prefetchCache.warm(folderPaths, folderKey);
+
+  // New folder content — start at the top, and drop any stale browse scroll memory
+  const mainEl = $("#main");
+  if (mainEl) { mainEl.scrollTop = 0; viewScroll.browse = 0; }
 }
 
 // ── Thumbnail hover previews ─────────────────────────────────
