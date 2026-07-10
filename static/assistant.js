@@ -125,10 +125,131 @@
     }
   }
 
-  orb.addEventListener("click", () => { panel.classList.toggle("hidden"); if (!panel.classList.contains("hidden")) input.focus(); });
+  // ── Draggable orb + movable/resizable panel ─────────────────
+  // Position and size persist per-browser in localStorage; default stays bottom-right.
+  const ORB_MARGIN = 12, DRAG_THRESHOLD = 5;
+  const store = {
+    get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+    set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+    del(k) { try { localStorage.removeItem(k); } catch {} },
+  };
+  const clampNum = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+
+  function applyOrbPos(pos) {
+    if (pos) {
+      const size = orb.getBoundingClientRect();
+      const x = clampNum(pos.x, 0, window.innerWidth - (size.width || 56));
+      const y = clampNum(pos.y, 0, window.innerHeight - (size.height || 56));
+      orb.style.left = x + "px"; orb.style.top = y + "px";
+      orb.style.right = "auto"; orb.style.bottom = "auto";
+    } else {
+      // Back to the CSS default (bottom-right corner)
+      orb.style.left = orb.style.top = orb.style.right = orb.style.bottom = "";
+    }
+  }
+
+  function applyPanelSize(size) {
+    if (!size) return;
+    panel.classList.add("custom-size");
+    panel.style.width = clampNum(size.w, 300, window.innerWidth * 0.9) + "px";
+    panel.style.height = clampNum(size.h, 280, window.innerHeight * 0.85) + "px";
+  }
+
+  function positionPanel() {
+    if (panel.classList.contains("hidden")) return;
+    const o = orb.getBoundingClientRect();
+    const p = panel.getBoundingClientRect();
+    const vw = window.innerWidth, vh = window.innerHeight;
+    // Open above the orb when it sits in the lower half of the screen, else below;
+    // right-align to the orb on the right half, else left-align. Then clamp on-screen.
+    let top = (o.top + o.height / 2 > vh / 2) ? o.top - p.height - ORB_MARGIN : o.bottom + ORB_MARGIN;
+    let left = (o.left + o.width / 2 > vw / 2) ? o.right - p.width : o.left;
+    left = clampNum(left, ORB_MARGIN, Math.max(ORB_MARGIN, vw - p.width - ORB_MARGIN));
+    top = clampNum(top, ORB_MARGIN, Math.max(ORB_MARGIN, vh - p.height - ORB_MARGIN));
+    panel.style.left = left + "px"; panel.style.top = top + "px";
+    panel.style.right = "auto"; panel.style.bottom = "auto";
+  }
+
+  let orbDrag = null, suppressClick = false;
+  orb.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    const r = orb.getBoundingClientRect();
+    orbDrag = { startX: e.clientX, startY: e.clientY, offX: e.clientX - r.left, offY: e.clientY - r.top, moved: false };
+  });
+
+  const resizeHandle = panel.querySelector(".ai-resize-handle");
+  let panelResize = null;
+  if (resizeHandle) resizeHandle.addEventListener("mousedown", (e) => {
+    e.preventDefault(); e.stopPropagation();
+    const p = panel.getBoundingClientRect();
+    panelResize = { startW: p.width, startH: p.height, startX: e.clientX, startY: e.clientY, right: p.right, bottom: p.bottom };
+  });
+
+  document.addEventListener("mousemove", (e) => {
+    if (orbDrag) {
+      if (!orbDrag.moved && Math.hypot(e.clientX - orbDrag.startX, e.clientY - orbDrag.startY) < DRAG_THRESHOLD) return;
+      if (!orbDrag.moved) { orbDrag.moved = true; orb.classList.add("dragging"); }
+      e.preventDefault();
+      applyOrbPos({ x: e.clientX - orbDrag.offX, y: e.clientY - orbDrag.offY });
+      positionPanel();
+    }
+    if (panelResize) {
+      e.preventDefault();
+      const w = clampNum(panelResize.startW - (e.clientX - panelResize.startX), 300, window.innerWidth * 0.9);
+      const h = clampNum(panelResize.startH - (e.clientY - panelResize.startY), 280, window.innerHeight * 0.85);
+      panel.classList.add("custom-size");
+      panel.style.width = w + "px"; panel.style.height = h + "px";
+      // Top-left grip: keep the bottom-right corner pinned while resizing
+      panel.style.left = (panelResize.right - w) + "px";
+      panel.style.top = (panelResize.bottom - h) + "px";
+      panel.style.right = "auto"; panel.style.bottom = "auto";
+    }
+  });
+
+  document.addEventListener("mouseup", () => {
+    if (orbDrag) {
+      if (orbDrag.moved) {
+        orb.classList.remove("dragging");
+        const r = orb.getBoundingClientRect();
+        store.set("aiOrbPos", { x: r.left, y: r.top });
+        // Swallow the click that follows drag-end. Consumed by the click handler
+        // itself (deterministic), with a timeout fallback in case no click fires.
+        suppressClick = true;
+        setTimeout(() => { suppressClick = false; }, 250);
+      }
+      orbDrag = null;
+    }
+    if (panelResize) {
+      const p = panel.getBoundingClientRect();
+      store.set("aiPanelSize", { w: Math.round(p.width), h: Math.round(p.height) });
+      panelResize = null;
+    }
+  });
+
+  window.addEventListener("resize", () => {
+    const saved = store.get("aiOrbPos");
+    if (saved) applyOrbPos(saved);
+    positionPanel();
+  });
+
+  orb.addEventListener("click", () => {
+    if (suppressClick) { suppressClick = false; return; }  // consume the post-drag click
+    panel.classList.toggle("hidden");
+    if (!panel.classList.contains("hidden")) { positionPanel(); input.focus(); }
+  });
+  orb.addEventListener("dblclick", () => {
+    store.del("aiOrbPos");
+    applyOrbPos(null);
+    positionPanel();
+    toast("Assistant orb reset to default corner", "info");
+  });
   sendBtn.addEventListener("click", send);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
   $(".ai-reset").addEventListener("click", () => { history = []; msgs.innerHTML = ""; });
+
+  // Restore saved orb position + panel size on load
+  applyOrbPos(store.get("aiOrbPos"));
+  applyPanelSize(store.get("aiPanelSize"));
 
   // ── Settings: BYOK key wiring ──
   async function refreshKeyStatus() {
