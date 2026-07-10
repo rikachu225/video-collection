@@ -63,6 +63,11 @@
         <div class="breadcrumb" id="breadcrumb">
           <span class="crumb-home" data-tooltip="All Folders">Library</span>
         </div>
+        <button id="mobile-folder-chip" class="cyber-btn" aria-label="Choose folder">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <span id="mobile-folder-chip-label">Library</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="6 9 12 15 18 9"/></svg>
+        </button>
         <div class="topbar-actions">
           <div id="browse-media-controls" style="display:none;">
             <button class="cyber-btn" id="btn-play-all-browse" data-tooltip="Play All Previews">
@@ -93,6 +98,16 @@
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="12" y2="12"/><line x1="15" y1="15" x2="12" y2="12"/></svg>
               Import
             </button>
+            <button class="cyber-btn" id="btn-browse-overflow" aria-label="More actions" aria-haspopup="true">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>
+            </button>
+            <div id="browse-overflow-menu" class="overflow-menu hidden" role="menu">
+              <button role="menuitem" data-proxy="btn-pause-all-browse">Pause all</button>
+              <button role="menuitem" data-proxy="btn-unmute-all-browse">Unmute all</button>
+              <button role="menuitem" data-proxy="btn-mute-all-browse">Mute all</button>
+              <button role="menuitem" data-proxy="btn-download-url-folder">Download URL</button>
+              <button role="menuitem" data-proxy="btn-import-video">Import</button>
+            </div>
           </div>
           <div class="search-box" id="search-box">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -429,6 +444,30 @@
     <div class="ai-input-row">
       <input id="ai-input" type="text" placeholder="Ask me to loop, save, download…" />
       <button id="ai-send">Send</button>
+    </div>
+  </div>
+
+  <!-- Mobile bottom tab bar (visible <=640px via CSS) -->
+  <nav id="mobile-tabbar" aria-label="Primary">
+    <button class="tab-btn active" data-view="browse" aria-label="Browse">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    </button>
+    <button class="tab-btn" data-view="theater" aria-label="Theater">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="4" width="20" height="16" rx="2"/><path d="M2 8h20"/><path d="M10 12l4 2.5-4 2.5V12z"/></svg>
+    </button>
+    <button class="tab-btn" data-view="playlists" aria-label="Playlists">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+    </button>
+    <button class="tab-btn" id="tab-settings" aria-label="Settings">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+    </button>
+  </nav>
+
+  <!-- Mobile folder sheet -->
+  <div id="folder-sheet-overlay" class="folder-sheet-overlay hidden">
+    <div id="folder-sheet" class="folder-sheet" role="dialog" aria-label="Folders">
+      <div class="folder-sheet-grip"></div>
+      <div id="folder-sheet-list" class="folder-sheet-list"></div>
     </div>
   </div>
 
