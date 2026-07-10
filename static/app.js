@@ -1030,6 +1030,29 @@ function renderTheater() {
       });
     });
 
+    // Hover preview (muted), mirroring the browse grid: play from the loop start
+    // when a loop is set, else from 2s. Only touches clips that were paused, so it
+    // never fights Play All; reads clip.loop* live, so a just-changed loop applies.
+    const wrap = cell.querySelector(".theater-video-wrap");
+    wrap.addEventListener("mouseenter", () => {
+      if (!video.paused) return;              // already playing (e.g. Play All) — leave it be
+      if (clip.loopStart != null && clip.loopEnd != null) {
+        if (video.currentTime < clip.loopStart || video.currentTime >= clip.loopEnd) {
+          video.currentTime = clip.loopStart; // jump into the loop region
+        }
+      } else if (video.currentTime < 2) {
+        video.currentTime = 2;                // skip black intro frames, like browse
+      }
+      video._hoverStarted = true;
+      video.play().catch(() => {});
+    });
+    wrap.addEventListener("mouseleave", () => {
+      if (!video._hoverStarted) return;       // playback wasn't started by hover
+      video._hoverStarted = false;
+      video.pause();
+      video.currentTime = clip.loopStart != null ? clip.loopStart : 2;
+    });
+
     dom.theaterGrid.appendChild(cell);
   });
 
