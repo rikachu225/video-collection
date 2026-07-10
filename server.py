@@ -1114,7 +1114,12 @@ def get_thumbnail(video_path):
 
 
 def _placeholder_thumb():
-    """Return a 1x1 transparent pixel as fallback."""
+    """Return a tiny placeholder JPEG when no thumbnail can be generated.
+
+    The frontend treats a failed image load OR a decoded width <= 1px as
+    "no thumbnail" and renders a styled fallback tile — keep this payload
+    at most 1x1 so that detection keeps working.
+    """
     import base64
     pixel = base64.b64decode(
         "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAAMCAgMCAgMDAwMEAwMEBQgFBQQEBQoH"

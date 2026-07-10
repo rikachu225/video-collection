@@ -213,11 +213,12 @@ $("#btn-sidebar-toggle").addEventListener("click", () => {
 });
 
 // ── Browse Media Controls ────────────────────────────────────
+// Pins a live preview on every card — N concurrent streams; user-invoked, matches pre-2.0 Play All behavior
 $("#btn-play-all-browse").addEventListener("click", () => {
   $$("#video-grid .video-thumb").forEach((t) => {
     t.dataset.pinned = "1";
     const v = promoteThumb(t);
-    v.currentTime = 2;
+    if (v.readyState >= 1) v.currentTime = 2;
     v.play().catch(() => {});
   });
   toast("All previews playing", "info");
@@ -480,6 +481,14 @@ function demoteThumb(thumbEl) {
 
 // ── Render Video Grid ────────────────────────────────────────
 function renderVideoGrid(videos) {
+  // Tear down any live preview videos before rebuilding the grid,
+  // otherwise detached <video> elements hold streams until GC
+  dom.videoGrid.querySelectorAll(".thumb-video").forEach((v) => {
+    v.pause();
+    v.removeAttribute("src");
+    v.load();
+    v.remove();
+  });
   dom.videoGrid.innerHTML = "";
   if (videos.length === 0) {
     dom.videoGrid.innerHTML = `
@@ -526,6 +535,12 @@ function renderVideoGrid(videos) {
     thumbImg.addEventListener("error", () => {
       thumbImg.remove();
       thumbEl.classList.add("thumb-fallback");
+    }, { once: true });
+    thumbImg.addEventListener("load", () => {
+      if (thumbImg.naturalWidth <= 1) {
+        thumbImg.remove();
+        thumbEl.classList.add("thumb-fallback");
+      }
     }, { once: true });
     if (HOVER_CAPABLE) {
       thumbEl.addEventListener("mouseenter", () => promoteThumb(thumbEl));

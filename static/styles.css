@@ -507,11 +507,8 @@ html, body {
   border-radius: var(--radius);
   overflow: hidden;
   transition: all 0.2s;
-}
-
-.video-card {
   content-visibility: auto;
-  contain-intrinsic-size: 240px 190px;
+  contain-intrinsic-size: auto 240px auto 190px;
 }
 
 .video-card:hover {
