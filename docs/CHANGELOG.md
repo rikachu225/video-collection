@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.4.2 - 2026-07-10
+### Fixed
+- Stale breadcrumb: switching to Theater/Playlists no longer keeps the previous folder's "Library > folder" crumb in the topbar — the breadcrumb (and mobile folder chip) now sync with the active view via a single `renderBreadcrumb()` helper. Switching back to browse with a folder still open restores its crumb.
+
 ## v2.4.1 - 2026-07-10
 ### Added
 - **Hover preview in the Theater**: mousing over a clip plays it muted, exactly like the browse grid — and if the clip has a loop set, the preview jumps into and plays the loop region. Mouse-leave pauses and rewinds to the loop start (or 2s for un-looped clips). Hover never interferes with Play All: clips that are already playing are left untouched.

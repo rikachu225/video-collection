@@ -180,6 +180,27 @@ function toast(message, type = "info") {
 // ── Navigation ───────────────────────────────────────────────
 const viewScroll = {}; // per-view scroll memory (#main is the single scroll container)
 
+// Breadcrumb + mobile folder chip always rendered together (single source of truth).
+// Pass a folder path for "Library > folder", or null for the plain home crumb.
+function renderBreadcrumb(folderPath) {
+  const chipLabel = $("#mobile-folder-chip-label");
+  if (!folderPath) {
+    dom.breadcrumb.innerHTML = `<span class="crumb-home">Library</span>`;
+    if (chipLabel) chipLabel.textContent = "Library";
+    return;
+  }
+  dom.breadcrumb.innerHTML = `
+    <span class="crumb-link" data-action="home">Library</span>
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+    <span class="crumb-current">${folderPath}</span>
+  `;
+  if (chipLabel) chipLabel.textContent = folderPath;
+  $(".crumb-link")?.addEventListener("click", () => {
+    switchView("browse");
+    showFolderGrid();
+  });
+}
+
 function switchView(view) {
   const main = $("#main");
   if (main && state.currentView) viewScroll[state.currentView] = main.scrollTop;
@@ -191,6 +212,10 @@ function switchView(view) {
   $$("#mobile-tabbar .tab-btn").forEach((b) => b.classList.remove("active"));
   $(`#mobile-tabbar .tab-btn[data-view="${view}"]`)?.classList.add("active");
   if (main) main.scrollTop = viewScroll[view] || 0;
+
+  // Keep the breadcrumb in sync with the active view — theater/playlists show the
+  // plain home crumb instead of inheriting a stale "Library > folder" from browse.
+  renderBreadcrumb(view === "browse" ? state.currentFolder : null);
 
   // Show/hide browse media controls
   const hasFolderVideos = view === "browse" && state.currentFolder;
@@ -338,9 +363,7 @@ async function toggleFolderVisibility(sourceIndex, folderName) {
 function showFolderGrid() {
   state.currentFolder = null;
   state.currentSourceIndex = null;
-  dom.breadcrumb.innerHTML = `<span class="crumb-home">Library</span>`;
-  const chipLabel = $("#mobile-folder-chip-label");
-  if (chipLabel) chipLabel.textContent = "Library";
+  renderBreadcrumb(null);
   dom.videoGrid.innerHTML = "";
 
   // Hide browse media controls on folder grid
@@ -438,17 +461,7 @@ async function openFolder(folderPath, sourceIndex) {
   $("#btn-import-video").style.display = "";
 
   // Breadcrumb
-  dom.breadcrumb.innerHTML = `
-    <span class="crumb-link" data-action="home">Library</span>
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
-    <span class="crumb-current">${folderPath}</span>
-  `;
-  const chipLabel = $("#mobile-folder-chip-label");
-  if (chipLabel) chipLabel.textContent = folderPath;
-  $(".crumb-link")?.addEventListener("click", () => {
-    switchView("browse");
-    showFolderGrid();
-  });
+  renderBreadcrumb(folderPath);
 
   // Ensure browse view is active
   if (state.currentView !== "browse") switchView("browse");
