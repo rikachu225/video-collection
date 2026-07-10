@@ -27,3 +27,6 @@ nul
 
 # Internal dev scaffolding (planning/specs) — keep local, not for public repo
 docs/superpowers/
+
+# Git worktrees (local only)
+.worktrees/
