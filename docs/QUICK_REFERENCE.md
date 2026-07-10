@@ -228,7 +228,8 @@ Toast container:    9999
 - Internal code uses "theater" (function names, IDs, routes, variables) — don't rename those
 
 ## AI Assistant (Gemini, BYOK)
-- Floating cyan orb (bottom-right) → glass chat panel. Natural-language control: loops, playlists, downloads, theater/playback, search, Q&A.
+- Floating cyan orb (default bottom-right) → glass chat panel. Natural-language control: loops, playlists, downloads, theater/playback, search, Q&A.
+- **Movable + resizable (v2.4.0)**: drag the orb anywhere (click = open chat, >5px = drag); panel anchors to the orb and auto-flips to stay on-screen; top-left grip resizes the panel. Position/size persist in localStorage (`aiOrbPos`, `aiPanelSize`); double-click orb = reset to default corner.
 - **BYOK**: key resolves `GEMINI_API_KEY` env var first, then `geminiApiKey` in git-ignored `data/config.json`. End users paste their own key in **Settings → AI Assistant**; the key is never returned by the API.
 - Backend `ai_agent.py` (tool schema, system prompt, Gemini function-calling loop, executors). Frontend `static/assistant.js` + `static/assistant.css`. Model default `gemini-flash-latest` (auto-tracks newest flash; override in `aiAssistant.model`).
 - Two tool types: **server actions** (loops/playlists/downloads — reuse existing routes) and **UI commands** (play/pause/mute/workspace/switch-view — run by `app.js` globals). A per-request context snapshot resolves "the third clip", "this" (open clip), and "save this playlist" (loaded playlist); every reference is re-validated server-side.

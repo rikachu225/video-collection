@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.4.0 - 2026-07-10
+### Added
+- **Draggable AI orb + movable/resizable chat panel**: drag the assistant orb anywhere on screen (5px click/drag threshold, clamped to the viewport); the chat panel anchors to the orb and auto-flips above/below and left/right so it always opens fully on-screen. Top-left resize grip on the panel (min 300×280, up to ~90% of the viewport, bottom-right corner pinned). Orb position and panel size persist per-browser in localStorage; double-click the orb to snap back to the default bottom-right corner. Defaults unchanged.
+
 ## v2.3.3 - 2026-07-10
 ### Fixed
 - Collapsed sidebar rail alignment: header stacks logo above the toggle (they were crammed side-by-side in 56px), and all rail controls (toggle, nav, settings, shutdown) share a uniform 40px footprint with 18px icons on one centerline.
