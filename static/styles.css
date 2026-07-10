@@ -2201,7 +2201,7 @@ html, body {
 
 /* ══════════════════════════════════════════════════════════════
    2.0 Mobile / Responsive Layer
-   z-index additions: tab bar 350, folder sheet 380 (below settings 400)
+   z-index additions: tab bar 90, folder sheet 95 (below modal overlays at 100/110)
    ══════════════════════════════════════════════════════════════ */
 
 #mobile-tabbar, #mobile-folder-chip { display: none; }
@@ -2275,8 +2275,15 @@ html, body {
     backdrop-filter: blur(16px);
     -webkit-backdrop-filter: blur(16px);
     border-top: 1px solid var(--border);
-    z-index: 350;
+    z-index: 90;
   }
+
+  /* Keep floating elements clear of the tab bar.
+     body prefix beats assistant.css base rules (same-specificity IDs,
+     assistant.css is linked after styles.css so it would otherwise win). */
+  body #ai-orb { bottom: calc(72px + env(safe-area-inset-bottom)); }
+  body #ai-panel { width: min(380px, calc(100vw - 32px)); right: 16px; bottom: calc(136px + env(safe-area-inset-bottom)); }
+  #toast-container { bottom: calc(76px + env(safe-area-inset-bottom)); }
 
   .tab-btn {
     flex: 1;
@@ -2346,7 +2353,7 @@ html, body {
     inset: 0;
     background: rgba(0, 0, 0, 0.6);
     backdrop-filter: blur(4px);
-    z-index: 380;
+    z-index: 95;
     display: flex;
     align-items: flex-end;
   }
