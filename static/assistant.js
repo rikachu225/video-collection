@@ -58,7 +58,13 @@
   }
 
   const UI = {
-    play_all: () => document.querySelectorAll(".ws-video, .theater-video, #video-grid .thumb-video").forEach((v) => v.play().catch(() => {})),
+    play_all: () => {
+      // Browse-grid previews are created on demand since 2.0 — pin them first (mirrors #btn-play-all-browse)
+      if (typeof promoteThumb === "function") {
+        document.querySelectorAll("#video-grid .video-thumb").forEach((t) => { t.dataset.pinned = "1"; promoteThumb(t); });
+      }
+      document.querySelectorAll(".ws-video, .theater-video, #video-grid .thumb-video").forEach((v) => v.play().catch(() => {}));
+    },
     pause_all: () => document.querySelectorAll(".ws-video, .theater-video, #video-grid .thumb-video").forEach((v) => v.pause()),
     mute_all: () => document.querySelectorAll(".ws-video, .theater-video, #video-grid .thumb-video").forEach((v) => { v.muted = true; }),
     unmute_all: () => document.querySelectorAll(".ws-video, .theater-video, #video-grid .thumb-video").forEach((v) => { v.muted = false; }),
