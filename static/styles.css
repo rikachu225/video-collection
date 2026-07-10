@@ -481,6 +481,15 @@ html, body {
   gap: 16px;
 }
 
+/* Bento mode (video grids only — folder home grid stays uniform):
+   fine-grained rows + dense packing lets portrait tiles sit tall while
+   landscape tiles tetris-fill the gaps. Cards span rows via JS (bentoSpan). */
+.video-grid.bento {
+  grid-auto-rows: 8px;
+  grid-auto-flow: dense;
+  align-items: start;
+}
+
 /* ── Folder Cards ─────────────────────────────────────────── */
 .folder-card {
   display: flex;
@@ -837,6 +846,11 @@ html, body {
   display: grid;
   gap: var(--space-4);
   grid-template-columns: repeat(2, 1fr);
+  /* Bento: cells adopt each clip's aspect (wrap aspect-ratio set from metadata)
+     and span 8px rows via JS (bentoSpan); dense packing fills the gaps */
+  grid-auto-rows: 8px;
+  grid-auto-flow: dense;
+  align-items: start;
 }
 
 .theater-cell {
@@ -1700,7 +1714,8 @@ html, body {
 
 .video-popup video {
   width: 100%;
-  max-height: calc(85vh - 50px);
+  flex: 1;
+  min-height: 0;
   object-fit: contain;
   background: #000;
   outline: none;

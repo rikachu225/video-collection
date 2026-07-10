@@ -511,6 +511,43 @@ function demoteThumb(thumbEl) {
   v.remove();
 }
 
+// ── Bento grid ────────────────────────────────────────────────
+// Cards keep their natural aspect (portrait tiles are tall) and span fine-grained
+// grid rows; grid-auto-flow: dense back-fills the gaps, tetris-style.
+const BENTO_ROW = 8; // px — must match grid-auto-rows in .video-grid.bento / .theater-grid
+
+// Clamp aspect so one pathological file can't produce an absurd tile.
+// 0.4 covers even extra-tall phone formats (9:19.5 ≈ 0.46); 2.6 covers ultrawide.
+const clampAspect = (w, h) => Math.min(Math.max(w / h, 0.4), 2.6);
+
+function bentoSpan(card) {
+  const grid = card.parentElement;
+  if (!grid) return;
+  const gap = parseFloat(getComputedStyle(grid).rowGap) || 16;
+  // Arithmetic, not measurement: cards use content-visibility:auto, so skipped
+  // (off-screen) cards measure as empty placeholders. The media height is pure
+  // math — aspect box = clientWidth / ar (the card's own box is always laid out).
+  const media = card.firstElementChild; // .video-thumb / .theater-video-wrap
+  const ar = parseFloat(media?.style.aspectRatio) || 16 / 9;
+  const mediaH = (card.clientWidth || 240) / ar;
+  // Chrome below the media (info bar / loop controls): 0 while skipped → typical
+  // fallback, self-corrected by the contentvisibilityautostatechange re-span.
+  let chromeH = 2; // borders
+  for (const el of card.children) {
+    if (el === media) continue;
+    chromeH += el.offsetHeight || 48;
+  }
+  card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((mediaH + chromeH + gap) / (BENTO_ROW + gap)))}`;
+}
+
+let bentoResizeTimer;
+window.addEventListener("resize", () => {
+  clearTimeout(bentoResizeTimer);
+  bentoResizeTimer = setTimeout(() => {
+    $$(".video-grid.bento .video-card, .theater-grid .theater-cell").forEach(bentoSpan);
+  }, 150);
+});
+
 // ── Render Video Grid ────────────────────────────────────────
 function renderVideoGrid(videos) {
   // Tear down any live preview videos before rebuilding the grid,
@@ -523,6 +560,7 @@ function renderVideoGrid(videos) {
   });
   dom.videoGrid.innerHTML = "";
   if (videos.length === 0) {
+    dom.videoGrid.classList.remove("bento");
     dom.videoGrid.innerHTML = `
       <div class="empty-state" style="grid-column: 1 / -1;">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -532,6 +570,7 @@ function renderVideoGrid(videos) {
     return;
   }
 
+  dom.videoGrid.classList.add("bento");
   videos.forEach((video) => {
     const card = document.createElement("div");
     card.className = "video-card";
@@ -568,12 +607,19 @@ function renderVideoGrid(videos) {
       thumbImg.remove();
       thumbEl.classList.add("thumb-fallback");
     }, { once: true });
-    thumbImg.addEventListener("load", () => {
+    const applyThumbAspect = () => {
       if (thumbImg.naturalWidth <= 1) {
         thumbImg.remove();
         thumbEl.classList.add("thumb-fallback");
+        return;
       }
-    }, { once: true });
+      // Bento: adopt the clip's natural aspect (thumbnails preserve it), then re-span
+      thumbEl.style.aspectRatio = `${clampAspect(thumbImg.naturalWidth, thumbImg.naturalHeight)}`;
+      bentoSpan(card);
+    };
+    thumbImg.addEventListener("load", applyThumbAspect, { once: true });
+    // Cached images may complete before the listener attaches — handle them now
+    if (thumbImg.complete && thumbImg.naturalWidth > 0) applyThumbAspect();
     if (HOVER_CAPABLE) {
       thumbEl.addEventListener("mouseenter", () => promoteThumb(thumbEl));
       thumbEl.addEventListener("mouseleave", () => demoteThumb(thumbEl));
@@ -593,6 +639,9 @@ function renderVideoGrid(videos) {
     });
 
     dom.videoGrid.appendChild(card);
+    bentoSpan(card); // provisional 16:9 span; corrected when the thumbnail loads
+    // Re-span the moment content-visibility renders the card for real (on scroll)
+    card.addEventListener("contentvisibilityautostatechange", () => bentoSpan(card));
   });
 }
 
@@ -672,6 +721,10 @@ async function playVideo(video) {
     <div class="popup-resize-handle" data-resize="se"></div>
   `;
 
+  // Sizing is aspect-driven (snapPopupToAspect) — don't let CSS caps fight it
+  popup.style.maxWidth = "none";
+  popup.style.maxHeight = "none";
+
   // Apply saved layout or center defaults
   if (saved) {
     popup.style.left = `${saved.left}px`;
@@ -738,8 +791,11 @@ async function playVideo(video) {
 
   function onMouseUp() {
     if (popupDrag || popupResize) {
+      const wasResize = !!popupResize;
       popupDrag = null;
       popupResize = null;
+      // Free drag, snap on release: correct the window to the video's aspect
+      if (wasResize) snapPopupToAspect();
       // Save layout on every drag/resize end
       saveFolderLayout(folderKey, video.path, {
         left: popup.offsetLeft,
@@ -800,6 +856,33 @@ async function playVideo(video) {
       setupVideoLoop(vid, video.loopStart, video.loopEnd);
     }
   }
+
+  // ── Aspect-aware window: fit the popup to the video so bars can't appear ──
+  const popupVid = popup.querySelector("video");
+  function snapPopupToAspect() {
+    if (!popupVid.videoWidth || !popupVid.videoHeight) return;
+    const ar = popupVid.videoWidth / popupVid.videoHeight;
+    const chrome = popup.querySelector(".video-popup-header").offsetHeight
+                 + popup.querySelector(".popup-loop-bar").offsetHeight;
+    const rect = popup.getBoundingClientRect(); // pre-resize position (transform-safe)
+    const maxH = window.innerHeight * 0.92 - chrome;
+    const maxW = window.innerWidth * 0.95;
+    // Start from the current width, floored so a degenerate/stale saved layout
+    // can't produce a tiny window, then fit the height to the video's aspect.
+    let w = Math.min(Math.max(rect.width, 320), maxW);
+    let videoH = w / ar;
+    if (videoH > maxH) { videoH = Math.max(158, maxH); w = videoH * ar; }
+    if (w > maxW) { w = maxW; videoH = w / ar; }
+    popup.style.width = `${Math.round(w)}px`;
+    popup.style.height = `${Math.round(videoH + chrome)}px`;
+    // Keep the (possibly reshaped) window fully on-screen
+    popup.style.left = `${Math.max(0, Math.min(rect.left, window.innerWidth - Math.round(w)))}px`;
+    popup.style.top = `${Math.max(0, Math.min(rect.top, window.innerHeight - Math.round(videoH + chrome)))}px`;
+    popup.style.transform = "none";
+  }
+  if (popupVid.readyState >= 1) snapPopupToAspect(); // metadata may already be in (cache)
+  popupVid.addEventListener("loadedmetadata", snapPopupToAspect, { once: true });
+  popupVid.addEventListener("loadeddata", snapPopupToAspect, { once: true }); // settle pass
 
   // Popup loop set (persists for theater clips)
   popup.querySelector('[data-action="popup-set-loop"]').addEventListener("click", async () => {
@@ -1066,7 +1149,17 @@ function renderTheater() {
       video.currentTime = clip.loopStart != null ? clip.loopStart : 2;
     });
 
+    // Bento: adopt the clip's natural aspect once metadata arrives, then re-span
+    video.addEventListener("loadedmetadata", () => {
+      if (video.videoWidth && video.videoHeight) {
+        wrap.style.aspectRatio = `${clampAspect(video.videoWidth, video.videoHeight)}`;
+        bentoSpan(cell);
+      }
+    }, { once: true });
+
     dom.theaterGrid.appendChild(cell);
+    bentoSpan(cell); // provisional 16:9 span; corrected when metadata loads
+    cell.addEventListener("contentvisibilityautostatechange", () => bentoSpan(cell));
   });
 
   // Staggered loading: load videos one-by-one to reduce HDD seek contention

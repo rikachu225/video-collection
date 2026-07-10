@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.5.0 - 2026-07-10
+### Added
+- **Bento grid** 🍱: browse and Theater grids now honor each clip's true aspect ratio — portrait (9:16) clips render as tall tiles and landscape tiles tetris-fill around them (`grid-auto-flow: dense` + per-card row spans). Works with `content-visibility: auto` (spans are computed arithmetically and self-correct on reveal via `contentvisibilityautostatechange`).
+- **Aspect-aware popup player**: the popup sizes itself to the video's aspect on open and snaps to it after a free resize — black bars can no longer appear. Portrait clips open as tall windows.
+
+### Fixed
+- Cached thumbnails (week-long Cache-Control) could complete before the `load` listener attached — the already-complete case is now handled, so aspects apply on warm caches too.
+
 ## v2.4.3 - 2026-07-10
 ### Changed
 - Folder toolbar decluttered: Play/Pause/Unmute/Mute All are now icon-only squares (tooltips carry the labels) and "Download URL" is just "Download" — the breadcrumb gets its breathing room back instead of being clipped by the button row. Mobile overflow menu unchanged (it has its own labels).
