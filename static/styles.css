@@ -868,6 +868,7 @@ html, body {
 
 /* ── Speed Button ─────────────────────────────────────────── */
 .speed-btn {
+  height: var(--h-sm);
   font-size: 0.7rem;
   padding: 2px 6px;
   min-width: unset;
@@ -924,7 +925,8 @@ html, body {
 
 .loop-input {
   width: 52px;
-  padding: 4px 6px;
+  height: var(--h-sm);
+  padding: 0 6px;
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1148,7 +1150,9 @@ html, body {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 }
 
