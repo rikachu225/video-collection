@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.3.1 - 2026-07-10
+### Fixed
+- Escape now closes only the topmost visible overlay (single z-order dispatcher) instead of every open layer at once — e.g. folder picker over Settings unwinds one layer per press. Save-playlist, URL, and download-to-folder modals also gained Escape-to-close.
+
 ## v2.3.0 - 2026-07-10
 ### Added
 - **Mobile layer**: bottom tab bar (Browse / Theater / Playlists / Settings) with safe-area support, slide-up folder sheet, toolbar overflow menu, and tap-to-expand search at ≤640px; tablets (641–1024px) start with the collapsed sidebar rail; touch devices get always-visible card actions. Workspace mode stays desktop-only.

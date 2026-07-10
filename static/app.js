@@ -1827,10 +1827,29 @@ $("#ws-toggle-fullscreen").addEventListener("click", () => {
   }, 300);
 });
 
-// Escape to exit workspace
+// ── Escape dispatcher ────────────────────────────────────────
+// One listener closes only the topmost visible overlay (z-order),
+// so stacked dialogs (e.g. folder picker over settings) unwind one
+// layer per press instead of all closing at once. The video popup
+// keeps its own per-instance handler (closure-scoped closePopup).
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && state.workspaceOpen) {
-    closeWorkspace();
+  if (e.key !== "Escape") return;
+  if (state.workspaceOpen) { closeWorkspace(); return; }                // z 500
+  const picker = $("#folder-picker-overlay");                           // z 450
+  if (picker && !picker.classList.contains("hidden")) { closeFolderPicker(); return; }
+  if (document.querySelector(".video-popup-overlay")) return;           // z 400 — popup's own handler closes it
+  const escLayers = [
+    ["#import-modal-overlay", closeImportModal],                        // z 110
+    ["#settings-overlay", closeSettings],                               // z 100
+    ["#modal-overlay", () => $("#modal-cancel").click()],               // z 100 (save playlist)
+    ["#url-modal-overlay", () => $("#url-modal-cancel").click()],       // z 100
+    ["#new-collection-overlay", closeNewCollectionModal],               // z 100
+    ["#folder-dl-modal-overlay", () => $("#folder-dl-cancel").click()], // z 100
+    ["#folder-sheet-overlay", closeFolderSheet],                        // z 95
+  ];
+  for (const [sel, close] of escLayers) {
+    const el = $(sel);
+    if (el && !el.classList.contains("hidden")) { close(); return; }
   }
 });
 
@@ -2076,10 +2095,6 @@ $("#mobile-folder-chip")?.addEventListener("click", openFolderSheet);
 $("#folder-sheet-overlay")?.addEventListener("click", (e) => {
   if (e.target === $("#folder-sheet-overlay")) closeFolderSheet();
 });
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#folder-sheet-overlay").classList.contains("hidden")) closeFolderSheet();
-});
-
 // Overflow menu proxies clicks to the real (hidden) toolbar buttons
 $("#btn-browse-overflow")?.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -2229,12 +2244,6 @@ $("#settings-overlay").addEventListener("click", (e) => {
 });
 
 // Close settings on Escape
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#settings-overlay").classList.contains("hidden")) {
-    closeSettings();
-  }
-});
-
 // Enter key in source path input triggers add
 $("#source-path-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") addNewSource();
@@ -2345,12 +2354,6 @@ function openFolderPicker() {
 function closeFolderPicker() {
   $("#folder-picker-overlay").classList.add("hidden");
 }
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#folder-picker-overlay").classList.contains("hidden")) {
-    closeFolderPicker();
-  }
-});
 
 async function browseTo(path) {
   const url = path
@@ -2500,12 +2503,6 @@ $("#new-collection-overlay").addEventListener("click", (e) => {
   if (e.target === $("#new-collection-overlay")) closeNewCollectionModal();
 });
 
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#new-collection-overlay").classList.contains("hidden")) {
-    closeNewCollectionModal();
-  }
-});
-
 // Browse button inside collection modal — reuse folder picker with a callback
 $("#collection-browse-btn").addEventListener("click", () => {
   // Open the existing folder picker but set a flag so Select populates the collection path
@@ -2638,12 +2635,6 @@ $("#import-modal-cancel").addEventListener("click", closeImportModal);
 
 $("#import-modal-overlay").addEventListener("click", (e) => {
   if (e.target === $("#import-modal-overlay")) closeImportModal();
-});
-
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !$("#import-modal-overlay").classList.contains("hidden")) {
-    closeImportModal();
-  }
 });
 
 $("#import-modal-import").addEventListener("click", importSelectedVideos);
