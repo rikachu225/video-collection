@@ -172,6 +172,7 @@ python server.py 8080        # Start on custom port
 - Uses `timeupdate` event listener on video elements
 - Format: `m:ss` (e.g., "1:20" = 80 seconds)
 - Supports `m:ss`, `h:mm:ss`, and raw seconds
+- Theater hover preview (v2.4.1): mouseenter plays muted from the loop start (or 2s if no loop); mouseleave pauses + rewinds. Skips clips already playing (Play All safe)
 
 ### Drag & Resize (Workspace)
 - Mousedown on panel (not buttons/handles/video) starts drag

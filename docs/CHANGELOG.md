@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.4.1 - 2026-07-10
+### Added
+- **Hover preview in the Theater**: mousing over a clip plays it muted, exactly like the browse grid — and if the clip has a loop set, the preview jumps into and plays the loop region. Mouse-leave pauses and rewinds to the loop start (or 2s for un-looped clips). Hover never interferes with Play All: clips that are already playing are left untouched.
+
 ## v2.4.0 - 2026-07-10
 ### Added
 - **Draggable AI orb + movable/resizable chat panel**: drag the assistant orb anywhere on screen (5px click/drag threshold, clamped to the viewport); the chat panel anchors to the orb and auto-flips above/below and left/right so it always opens fully on-screen. Top-left resize grip on the panel (min 300×280, up to ~90% of the viewport, bottom-right corner pinned). Orb position and panel size persist per-browser in localStorage; double-click the orb to snap back to the default bottom-right corner. Defaults unchanged.
