@@ -341,9 +341,15 @@ html, body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow-y: auto;
   background: var(--bg-deep);
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-glow) transparent;
 }
+
+#main::-webkit-scrollbar { width: 6px; }
+#main::-webkit-scrollbar-track { background: transparent; }
+#main::-webkit-scrollbar-thumb { background: var(--border-glow); border-radius: 10px; }
 
 /* ── Top Bar ──────────────────────────────────────────────── */
 #topbar {
@@ -354,7 +360,12 @@ html, body {
   justify-content: space-between;
   padding: 0 var(--space-5);
   border-bottom: 1px solid var(--border);
-  background: var(--bg-primary);
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(13, 13, 20, 0.72);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .breadcrumb {
@@ -430,15 +441,8 @@ html, body {
 .view {
   display: none;
   flex: 1;
-  overflow-y: auto;
   padding: var(--space-5);
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-glow) transparent;
 }
-
-.view::-webkit-scrollbar { width: 6px; }
-.view::-webkit-scrollbar-track { background: transparent; }
-.view::-webkit-scrollbar-thumb { background: var(--border-glow); border-radius: 10px; }
 
 .view.active { display: block; }
 
@@ -1039,7 +1043,7 @@ html, body {
   border-radius: var(--radius-lg);
   padding: 24px;
   width: 380px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5), var(--glow-cyan);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
 }
 
 .modal h3 {
@@ -1555,7 +1559,7 @@ html, body {
   border: 1px solid var(--border-glow);
   border-radius: var(--radius-lg);
   overflow: hidden;
-  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.6), 0 0 40px rgba(0, 240, 255, 0.06);
+  box-shadow: 0 20px 80px rgba(0, 0, 0, 0.6);
   cursor: default;
 }
 
