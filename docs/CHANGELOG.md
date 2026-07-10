@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.4.3 - 2026-07-10
+### Changed
+- Folder toolbar decluttered: Play/Pause/Unmute/Mute All are now icon-only squares (tooltips carry the labels) and "Download URL" is just "Download" — the breadcrumb gets its breathing room back instead of being clipped by the button row. Mobile overflow menu unchanged (it has its own labels).
+
 ## v2.4.2 - 2026-07-10
 ### Fixed
 - Stale breadcrumb: switching to Theater/Playlists no longer keeps the previous folder's "Library > folder" crumb in the topbar — the breadcrumb (and mobile folder chip) now sync with the active view via a single `renderBreadcrumb()` helper. Switching back to browse with a folder still open restores its crumb.

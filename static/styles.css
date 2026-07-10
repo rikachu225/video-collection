@@ -778,6 +778,13 @@ html, body {
   white-space: nowrap;
 }
 
+/* Icon-only square variant (relies on data-tooltip for the label) */
+.cyber-btn.icon-only {
+  width: var(--h-md);
+  padding: 0;
+  justify-content: center;
+}
+
 .cyber-btn:hover {
   background: var(--bg-hover);
   color: var(--text-primary);
