@@ -1036,12 +1036,14 @@ html, body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: 60px 20px;
+  padding: var(--space-6) var(--space-4);
   text-align: center;
+  min-height: 40vh;
 }
 
-.empty-state p { color: var(--text-muted); font-size: 14px; margin-top: 12px; }
-.empty-state .hint { font-size: 12px; color: var(--text-muted); margin-top: 4px; opacity: 0.6; }
+.empty-state svg { margin-bottom: var(--space-2); }
+.empty-state p { color: var(--text-secondary); font-size: 15px; margin-top: var(--space-3); font-weight: 500; }
+.empty-state .hint { font-size: 13px; color: var(--text-muted); margin-top: var(--space-1); opacity: 1; font-weight: 400; }
 .empty-state .hint strong { color: var(--cyan); }
 
 .hidden { display: none !important; }
