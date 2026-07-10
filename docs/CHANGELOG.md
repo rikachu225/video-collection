@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.3.2 - 2026-07-10
+### Fixed
+- Cache-busting `?v=` query on styles.css / assistant.css / app.js / assistant.js so frontend updates apply on a normal refresh instead of being pinned by browser heuristic caching. Bump the version in index.html whenever static assets change.
+
 ## v2.3.1 - 2026-07-10
 ### Fixed
 - Escape now closes only the topmost visible overlay (single z-order dispatcher) instead of every open layer at once — e.g. folder picker over Settings unwinds one layer per press. Save-playlist, URL, and download-to-folder modals also gained Escape-to-close.

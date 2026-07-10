@@ -254,3 +254,4 @@ No frontend dependencies. No build step. No npm.
 | 4 | Hardcode media paths | Use `data/config.json` mediaPaths array |
 | 5 | `start.bat` without `cd /d "%~dp0"` | Required for shell:startup folder compatibility |
 | 6 | Trust user-supplied paths because LAN guard is on | Defense-in-depth: reject `..`/absolute paths AND verify resolved path lives inside an allowed root via `_is_contained()` |
+| 7 | Ship static asset changes without bumping `?v=` | Bump the `?v=` query on css/js links in index.html — browsers heuristic-cache unversioned assets |
