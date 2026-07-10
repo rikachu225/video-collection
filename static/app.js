@@ -214,7 +214,12 @@ $("#btn-sidebar-toggle").addEventListener("click", () => {
 
 // ── Browse Media Controls ────────────────────────────────────
 $("#btn-play-all-browse").addEventListener("click", () => {
-  $$("#video-grid .thumb-video").forEach((v) => { v.currentTime = 2; v.play().catch(() => {}); });
+  $$("#video-grid .video-thumb").forEach((t) => {
+    t.dataset.pinned = "1";
+    const v = promoteThumb(t);
+    v.currentTime = 2;
+    v.play().catch(() => {});
+  });
   toast("All previews playing", "info");
 });
 
@@ -442,6 +447,37 @@ async function openFolder(folderPath, sourceIndex) {
   if (folderPaths.length > 0) prefetchCache.warm(folderPaths, folderKey);
 }
 
+// ── Thumbnail hover previews ─────────────────────────────────
+// Cards render as lazy <img> thumbnails; a streaming <video> is created
+// only while hovered (or pinned by "Play All"), then torn down.
+const HOVER_CAPABLE = window.matchMedia("(hover: hover)").matches;
+
+function promoteThumb(thumbEl) {
+  let v = thumbEl.querySelector(".thumb-video");
+  if (v) return v;
+  v = document.createElement("video");
+  v.className = "thumb-video";
+  v.muted = true;
+  v.preload = "metadata";
+  v.src = `/api/stream/${encodeURIComponent(thumbEl.dataset.path)}`;
+  v.addEventListener("loadedmetadata", () => {
+    v.currentTime = 2;
+    v.play().catch(() => {});
+  }, { once: true });
+  thumbEl.prepend(v);
+  return v;
+}
+
+function demoteThumb(thumbEl) {
+  if (thumbEl.dataset.pinned === "1") return;
+  const v = thumbEl.querySelector(".thumb-video");
+  if (!v) return;
+  v.pause();
+  v.removeAttribute("src");
+  v.load();
+  v.remove();
+}
+
 // ── Render Video Grid ────────────────────────────────────────
 function renderVideoGrid(videos) {
   dom.videoGrid.innerHTML = "";
@@ -460,7 +496,8 @@ function renderVideoGrid(videos) {
     card.className = "video-card";
     card.innerHTML = `
       <div class="video-thumb" data-path="${video.path}">
-        <video class="thumb-video" src="/api/stream/${encodeURIComponent(video.path)}#t=2" preload="metadata" muted></video>
+        <img class="thumb-img" loading="lazy" decoding="async" alt=""
+             src="/api/thumbnail/${encodeURIComponent(video.path)}" />
         <div class="thumb-overlay">
           <svg width="36" height="36" viewBox="0 0 24 24" fill="white" opacity="0.9"><polygon points="5 3 19 12 5 21 5 3"/></svg>
         </div>
@@ -483,16 +520,17 @@ function renderVideoGrid(videos) {
       playVideo(video);
     });
 
-    // Hover preview
-    const thumbVid = card.querySelector(".thumb-video");
-    card.querySelector(".video-thumb").addEventListener("mouseenter", () => {
-      thumbVid.currentTime = 2;
-      thumbVid.play().catch(() => {});
-    });
-    card.querySelector(".video-thumb").addEventListener("mouseleave", () => {
-      thumbVid.pause();
-      thumbVid.currentTime = 2;
-    });
+    // Hover preview: promote to live video on enter, tear down on leave
+    const thumbEl = card.querySelector(".video-thumb");
+    const thumbImg = card.querySelector(".thumb-img");
+    thumbImg.addEventListener("error", () => {
+      thumbImg.remove();
+      thumbEl.classList.add("thumb-fallback");
+    }, { once: true });
+    if (HOVER_CAPABLE) {
+      thumbEl.addEventListener("mouseenter", () => promoteThumb(thumbEl));
+      thumbEl.addEventListener("mouseleave", () => demoteThumb(thumbEl));
+    }
 
     // Add to theater button
     card.querySelector(".add-theater-btn").addEventListener("click", (e) => {
