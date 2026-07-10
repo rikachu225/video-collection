@@ -20,6 +20,11 @@ def test_thumbnail_sends_cache_headers(tmp_path, monkeypatch):
     assert "max-age=604800" in resp.headers.get("Cache-Control", "")
     assert resp.headers.get("ETag")
 
+    # Conditional round-trip: same ETag must yield 304 Not Modified
+    etag = resp.headers["ETag"]
+    resp2 = client.get("/api/thumbnail/clip.mp4", headers={"If-None-Match": etag})
+    assert resp2.status_code == 304
+
 
 def test_placeholder_gets_short_cache(tmp_path, monkeypatch):
     fake_video = tmp_path / "clip.mp4"

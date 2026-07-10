@@ -1098,8 +1098,12 @@ def get_thumbnail(video_path):
                 capture_output=True, timeout=15,
             )
             if result.returncode != 0:
+                # Remove any partial output so a truncated JPEG is never
+                # served (and browser-cached for 7 days).
+                thumb_path.unlink(missing_ok=True)
                 return _placeholder_thumb()
         except (FileNotFoundError, subprocess.TimeoutExpired):
+            thumb_path.unlink(missing_ok=True)
             return _placeholder_thumb()
 
     if thumb_path.exists():
