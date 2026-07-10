@@ -1103,7 +1103,9 @@ def get_thumbnail(video_path):
             return _placeholder_thumb()
 
     if thumb_path.exists():
-        return send_file(thumb_path, mimetype="image/jpeg")
+        response = send_file(thumb_path, mimetype="image/jpeg", conditional=True)
+        response.headers["Cache-Control"] = "public, max-age=604800"
+        return response
     return _placeholder_thumb()
 
 
@@ -1118,7 +1120,9 @@ def _placeholder_thumb():
         "/EABQQAQAAAAAAAAAAAAAAAAAAAAD/xAAUAQEAAAAAAAAAAAAAAAAAAAAA/8QAFBEBAAAA"
         "AAAAAAAAAAAAAAAAAP/aAAwDAQACEQMRAD8AKwA//9k="
     )
-    return Response(pixel, mimetype="image/jpeg")
+    response = Response(pixel, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "public, max-age=300"
+    return response
 
 
 # ── API: Theater State ────────────────────────────────────────
