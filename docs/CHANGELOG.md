@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.3.0 - 2026-07-10
+### Added
+- **Mobile layer**: bottom tab bar (Browse / Theater / Playlists / Settings) with safe-area support, slide-up folder sheet, toolbar overflow menu, and tap-to-expand search at ≤640px; tablets (641–1024px) start with the collapsed sidebar rail; touch devices get always-visible card actions. Workspace mode stays desktop-only.
+- **Design tokens**: spacing scale `--space-1..6`, three control heights `--h-sm/md/lg` (28/34/40px), 5-size type scale with tabular numerals; `:focus-visible` rings and `prefers-reduced-motion` support.
+- Sticky glass topbar (backdrop blur); `#main` is now the single scroll container with per-view scroll memory.
+
+### Changed
+- **Browse grid is dramatically lighter**: cards render lazy `<img>` thumbnails via `/api/thumbnail/` and a preview `<video>` is created only on hover (or pinned by Play All), then torn down — replaces one streaming `<video>` per card (a 100-video folder now costs a few JPEG fetches instead of ~100 open streams).
+- Thumbnail responses are cacheable: `Cache-Control: public, max-age=604800` + conditional ETag (304 revalidation); placeholder gets `max-age=300`; partial thumbnails are deleted on ffmpeg failure so broken images can't get cached.
+- Empty states recomposed; glow effects now appear only on hover/active/focus states.
+
+### Removed
+- Unused lucide CDN stylesheet — the app loads fully offline again.
+
+### Fixed
+- QUICK_REFERENCE z-index map corrected (modal overlays are 100/110, not 400) and expanded with the new mobile layers.
+- AI assistant `play_all` now pins the lazy grid previews before playing (parity with the Play All button).
+- Long folder names ellipsize on folder cards instead of overflowing; horizontal overflow clipped on the scroll container.
+- Scroll position resets when entering a folder; cross-view scroll positions are remembered.
+
 ## v2.2.1 - 2026-06-22
 ### Changed
 - Default AI model → `gemini-flash-latest` (alias that auto-tracks Google's newest flash model, so the assistant won't break when an older model is retired). Override per-install via `aiAssistant.model`.

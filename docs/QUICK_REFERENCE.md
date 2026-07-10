@@ -12,6 +12,8 @@
 - Apple-inspired UX: precision, minimalism, smooth interactions
 - Zero external JS dependencies (no React, no jQuery, no build step)
 - Portable: zip and move to any machine, run install script
+- 2.0 design tokens: spacing `--space-1..6` (4/8/12/16/24/32px), control heights `--h-sm/md/lg` (28/34/40px), type scale 11/12/13/15/18px, glow only on hover/active/focus
+- Responsive tiers: phone ≤640px (bottom tab bar, folder sheet, overflow menu; workspace hidden), tablet 641–1024px (collapsed sidebar rail), desktop >1024px
 
 ## File Structure
 ```
@@ -97,7 +99,7 @@ state = {
 ```
 
 ### Views
-1. **Browse** - Folder grid (home) or video grid (inside folder). Sidebar with folder tree. Hover preview on thumbnails. Click to open popup player.
+1. **Browse** - Folder grid (home) or video grid (inside folder). Video cards are lazy `<img>` thumbnails from `/api/thumbnail/`; a preview `<video>` is created on hover (or pinned by Play All) and torn down after. Sidebar with folder tree. Click to open popup player.
 2. **My Theater** - Multi-video grid with per-clip loop controls (m:ss format). Play All, Pause All, Mute/Unmute All. Add clips from browse view.
 3. **Playlists** - Save/load/delete named playlists. Loading a playlist replaces Theater clips.
 4. **Workspace** - Fullscreen mode (Browser Fullscreen API). Draggable + resizable panels (4-corner resize handles). Save/restore layout positions. Auto-tiles if no saved layout. Opened from Theater or Browse (any folder).
@@ -159,6 +161,12 @@ python server.py 8080        # Start on custom port
 - WMV files get explicit `video/x-ms-wmv` content type
 - Cache-Control: public, max-age=86400
 
+### Thumbnails
+- Grid uses `/api/thumbnail/<path>` — ffmpeg poster frame (320px wide), generated on first request
+- Cached responses: `Cache-Control: public, max-age=604800` + conditional ETag (304 revalidation)
+- Placeholder (no ffmpeg / failure): `max-age=300`; partial files are removed on ffmpeg failure
+- Frontend shows a styled fallback tile when the image errors OR decodes ≤1px wide
+
 ### Loop System
 - Per-clip `loopStart`/`loopEnd` in seconds
 - Uses `timeupdate` event listener on video elements
@@ -179,11 +187,19 @@ python server.py 8080        # Start on custom port
 
 ## z-index Layer Map
 ```
-Tooltips:          300
-Settings overlay:  400
-Workspace overlay: 500
-Workspace toolbar: 510
-Toast container:   9999
+Topbar (sticky):      20
+Overflow menu:        60   (inside #topbar stacking context)
+Mobile tab bar:       90   (phone ≤640px only)
+Folder sheet:         95
+Modal overlays:      100   (.modal-overlay: settings, save-playlist, URL, new-collection, folder-dl)
+Import modal:        110
+Tooltips:            300
+Video popup overlay: 400
+Folder picker:       450
+Workspace overlay:   500
+Workspace toolbar:   510
+AI orb / panel:     9000 / 9001
+Toast container:    9999
 ```
 
 ## Data Files (Never Commit, User-Specific)
