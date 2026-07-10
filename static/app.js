@@ -178,12 +178,19 @@ function toast(message, type = "info") {
 }
 
 // ── Navigation ───────────────────────────────────────────────
+const viewScroll = {}; // per-view scroll memory (#main is the single scroll container)
+
 function switchView(view) {
+  const main = $("#main");
+  if (main && state.currentView) viewScroll[state.currentView] = main.scrollTop;
   state.currentView = view;
   $$(".view").forEach((v) => v.classList.remove("active"));
   $(`#view-${view}`).classList.add("active");
   $$(".nav-btn").forEach((b) => b.classList.remove("active"));
   $(`.nav-btn[data-view="${view}"]`)?.classList.add("active");
+  $$("#mobile-tabbar .tab-btn").forEach((b) => b.classList.remove("active"));
+  $(`#mobile-tabbar .tab-btn[data-view="${view}"]`)?.classList.add("active");
+  if (main) main.scrollTop = viewScroll[view] || 0;
 
   // Show/hide browse media controls
   const hasFolderVideos = view === "browse" && state.currentFolder;
@@ -332,6 +339,8 @@ function showFolderGrid() {
   state.currentFolder = null;
   state.currentSourceIndex = null;
   dom.breadcrumb.innerHTML = `<span class="crumb-home">Library</span>`;
+  const chipLabel = $("#mobile-folder-chip-label");
+  if (chipLabel) chipLabel.textContent = "Library";
   dom.videoGrid.innerHTML = "";
 
   // Hide browse media controls on folder grid
@@ -430,6 +439,8 @@ async function openFolder(folderPath, sourceIndex) {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
     <span class="crumb-current">${folderPath}</span>
   `;
+  const chipLabel = $("#mobile-folder-chip-label");
+  if (chipLabel) chipLabel.textContent = folderPath;
   $(".crumb-link")?.addEventListener("click", () => {
     switchView("browse");
     showFolderGrid();
@@ -1999,6 +2010,96 @@ dom.searchInput.addEventListener("input", (e) => {
   }, 250);
 });
 
+// ── Mobile: tab bar, folder sheet, overflow menu, search ────
+$$("#mobile-tabbar .tab-btn[data-view]").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const view = btn.dataset.view;
+    if (view === "browse") {
+      $("#view-player").classList.remove("active");
+      state.currentFolder = null;
+      switchView("browse");
+    } else {
+      switchView(view);
+    }
+  });
+});
+
+$("#tab-settings")?.addEventListener("click", openSettings);
+
+function openFolderSheet() {
+  const list = $("#folder-sheet-list");
+  list.innerHTML = "";
+
+  const allBtn = document.createElement("button");
+  allBtn.className = "folder-item";
+  allBtn.innerHTML = `
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+    <span class="folder-name">All folders</span>`;
+  allBtn.addEventListener("click", () => {
+    closeFolderSheet();
+    switchView("browse");
+    showFolderGrid();
+  });
+  list.appendChild(allBtn);
+
+  state.folders.filter((f) => !f.hidden).forEach((folder) => {
+    const el = document.createElement("button");
+    el.className = "folder-item";
+    el.innerHTML = `
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+      <span class="folder-name">${folder.name}</span>
+      <span class="folder-count">${folder.count}</span>`;
+    el.addEventListener("click", () => {
+      closeFolderSheet();
+      switchView("browse");
+      openFolder(folder.path, folder.sourceIndex);
+    });
+    list.appendChild(el);
+  });
+
+  $("#folder-sheet-overlay").classList.remove("hidden");
+}
+
+function closeFolderSheet() {
+  $("#folder-sheet-overlay").classList.add("hidden");
+}
+
+$("#mobile-folder-chip")?.addEventListener("click", openFolderSheet);
+$("#folder-sheet-overlay")?.addEventListener("click", (e) => {
+  if (e.target === $("#folder-sheet-overlay")) closeFolderSheet();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !$("#folder-sheet-overlay").classList.contains("hidden")) closeFolderSheet();
+});
+
+// Overflow menu proxies clicks to the real (hidden) toolbar buttons
+$("#btn-browse-overflow")?.addEventListener("click", (e) => {
+  e.stopPropagation();
+  $("#browse-overflow-menu").classList.toggle("hidden");
+});
+$$("#browse-overflow-menu [data-proxy]").forEach((item) => {
+  item.addEventListener("click", () => {
+    $("#browse-overflow-menu").classList.add("hidden");
+    $(`#${item.dataset.proxy}`)?.click();
+  });
+});
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#browse-overflow-menu") && !e.target.closest("#btn-browse-overflow")) {
+    $("#browse-overflow-menu")?.classList.add("hidden");
+  }
+});
+
+// Collapsed search expands on tap (phone width only; CSS gates visuals)
+$("#search-box").addEventListener("click", () => {
+  if (window.matchMedia("(max-width: 640px)").matches && !$("#search-box").classList.contains("expanded")) {
+    $("#search-box").classList.add("expanded");
+    dom.searchInput.focus();
+  }
+});
+dom.searchInput.addEventListener("blur", () => {
+  if (!dom.searchInput.value) $("#search-box").classList.remove("expanded");
+});
+
 // ── Utility Functions ────────────────────────────────────────
 function getVideoSrc(clip) {
   if (clip.url) return clip.url;
@@ -2701,6 +2802,9 @@ async function deleteVideo(video) {
 
 // ── Init ─────────────────────────────────────────────────────
 async function init() {
+  if (window.matchMedia("(min-width: 641px) and (max-width: 1024px)").matches) {
+    $("#sidebar").classList.add("collapsed");
+  }
   await loadBranding();
   await loadFolders();
   showFolderGrid();
