@@ -98,26 +98,53 @@ html, body {
 
 #sidebar.collapsed .sidebar-nav {
   flex-direction: column;
-  padding: 8px 6px;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) 0;
+}
+
+/* Rail controls share one 40px footprint so every icon sits on the same centerline */
+#sidebar.collapsed .sidebar-nav .nav-btn {
+  flex: 0 0 auto;
+  width: var(--h-lg);
+  height: var(--h-lg);
 }
 
 #sidebar.collapsed .sidebar-header {
-  padding: 12px 8px;
-  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3) 0;
 }
 
 #sidebar.collapsed .logo {
   justify-content: center;
 }
 
+#sidebar.collapsed .sidebar-toggle {
+  width: var(--h-lg);
+  height: var(--h-lg);
+}
+
 #sidebar.collapsed .sidebar-footer {
   justify-content: center;
-  padding: 10px 6px;
+  padding: var(--space-2) 0;
 }
 
 #sidebar.collapsed .footer-actions {
   flex-direction: column;
-  gap: 6px;
+  gap: var(--space-2);
+}
+
+#sidebar.collapsed .settings-btn,
+#sidebar.collapsed .shutdown-btn {
+  width: var(--h-lg);
+  height: var(--h-lg);
+}
+
+#sidebar.collapsed .settings-btn svg,
+#sidebar.collapsed .shutdown-btn svg {
+  width: 18px;
+  height: 18px;
 }
 
 .sidebar-toggle {

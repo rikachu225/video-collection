@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.3.3 - 2026-07-10
+### Fixed
+- Collapsed sidebar rail alignment: header stacks logo above the toggle (they were crammed side-by-side in 56px), and all rail controls (toggle, nav, settings, shutdown) share a uniform 40px footprint with 18px icons on one centerline.
+
 ## v2.3.2 - 2026-07-10
 ### Fixed
 - Cache-busting `?v=` query on styles.css / assistant.css / app.js / assistant.js so frontend updates apply on a normal refresh instead of being pinned by browser heuristic caching. Bump the version in index.html whenever static assets change.
