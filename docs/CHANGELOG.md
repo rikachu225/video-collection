@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.5.2 - 2026-07-13
+### Fixed
+- **Workspace stacking**: clicking (or resizing) a panel no longer flattens every other panel's z-index. The old two-level scheme (clicked panel `10`, everyone else `1`) meant all inactive panels tied at `1` and reverted to DOM/build order — so clicking a far-left panel could drop a far-right panel you'd deliberately placed on top *behind* its neighbor. Replaced with a monotonic "bring to front" counter (`topZ`): clicking a panel raises only that panel, and every other panel keeps the stack you arranged. Grabbing a resize corner now also brings its panel forward. Panels still initialize in clip order; stacking order is not persisted across reloads.
+
 ## v2.5.1 - 2026-07-10
 ### Added
 - **Drag-to-swap Sanctuary tiles**: grab a clip by its video area and drop it on another to trade places — curate which clips sit at the top of the viewport without free-floating overlap (they stay snapped to the bento grid). Tiles **glide** into their new spots with a FLIP animation — the grid is *not* rebuilt, so videos never reload/flicker. A 5px threshold keeps plain click (open popup) and hover-preview intact; controls/loop inputs are excluded from the grab. Order persists via `POST /api/theater/reorder` and auto-saves to the loaded playlist. Desktop/mouse for now.

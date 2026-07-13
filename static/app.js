@@ -1360,6 +1360,7 @@ $("#btn-clear-theater").addEventListener("click", async () => {
 let dragState = null;
 let resizeState = null;
 let scrubState = null; // { video, track } — active scrubber drag
+let topZ = 0; // monotonic "bring to front" counter — clicking a panel raises only it, preserving everyone else's stacking
 
 async function openWorkspace(clips) {
   const workspaceClips = clips || state.theaterClips;
@@ -1465,11 +1466,13 @@ function closeWorkspace() {
 }
 
 function buildWorkspacePanels() {
+  topZ = 0; // reset the stack on every rebuild
   state.workspaceClips.forEach((clip, i) => {
     const panel = document.createElement("div");
     panel.className = "ws-panel";
     panel.dataset.index = i;
     panel.dataset.path = clip.path;
+    panel.style.zIndex = String(++topZ); // initial stack follows build order; topZ ends at panel count
 
     const hasLoop = clip.loopStart !== null && clip.loopEnd !== null;
     const loopStartDisplay = hasLoop ? formatTime(clip.loopStart) : "";
@@ -1623,10 +1626,10 @@ function buildWorkspacePanels() {
     // Prevent scrubber bar clicks from triggering panel drag
     panel.querySelector(".ws-scrubber-bar").addEventListener("mousedown", (e) => e.stopPropagation());
 
-    // Any click anywhere on the panel brings it to front
+    // Any click anywhere on the panel brings it to front — raise ONLY this panel to a
+    // new top value so every other panel keeps the stacking the user arranged.
     panel.addEventListener("mousedown", () => {
-      $$(".ws-panel").forEach((p) => p.style.zIndex = "1");
-      panel.style.zIndex = "10";
+      panel.style.zIndex = String(++topZ);
     });
 
     // Drag from anywhere on the panel (except buttons, resize handle, video controls)
@@ -1647,6 +1650,7 @@ function buildWorkspacePanels() {
       handle.addEventListener("mousedown", (e) => {
         e.preventDefault();
         e.stopPropagation();
+        panel.style.zIndex = String(++topZ); // grabbing a corner also brings the panel forward
 
         resizeState = {
           panel,
