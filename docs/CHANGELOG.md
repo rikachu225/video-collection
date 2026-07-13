@@ -2,7 +2,7 @@
 
 ## v2.5.1 - 2026-07-10
 ### Added
-- **Drag-to-swap Sanctuary tiles**: grab a clip by its video area and drop it on another to trade places — curate which clips sit at the top of the viewport without free-floating overlap (they stay snapped to the bento grid). A 5px threshold keeps plain click (open popup) and hover-preview intact; controls/loop inputs are excluded from the grab. Order persists via `POST /api/theater/reorder` and auto-saves to the loaded playlist. Desktop/mouse for now.
+- **Drag-to-swap Sanctuary tiles**: grab a clip by its video area and drop it on another to trade places — curate which clips sit at the top of the viewport without free-floating overlap (they stay snapped to the bento grid). Tiles **glide** into their new spots with a FLIP animation — the grid is *not* rebuilt, so videos never reload/flicker. A 5px threshold keeps plain click (open popup) and hover-preview intact; controls/loop inputs are excluded from the grab. Order persists via `POST /api/theater/reorder` and auto-saves to the loaded playlist. Desktop/mouse for now.
 
 ## v2.5.0 - 2026-07-10
 ### Added

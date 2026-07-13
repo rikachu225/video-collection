@@ -991,13 +991,49 @@ async function loadTheater() {
 let theaterDrag = null;          // { path, name, startX, startY, moved, cell, chip }
 let theaterSuppressClick = false;
 
+// Swap two sibling nodes in place (no rebuild) via a temporary marker.
+function _swapDomNodes(a, b) {
+  const marker = document.createComment("swap");
+  a.replaceWith(marker);
+  b.replaceWith(a);
+  marker.replaceWith(b);
+}
+
 async function swapTheaterClips(pathA, pathB) {
   const clips = state.theaterClips;
   const i = clips.findIndex((c) => c.path === pathA);
   const j = clips.findIndex((c) => c.path === pathB);
   if (i < 0 || j < 0 || i === j) return;
-  [clips[i], clips[j]] = [clips[j], clips[i]];
-  renderTheater();
+
+  // FLIP animation — no renderTheater() rebuild, so videos never reload/flicker.
+  const cells = [...dom.theaterGrid.querySelectorAll(".theater-cell")];
+  const cellA = cells.find((c) => c.dataset.path === pathA);
+  const cellB = cells.find((c) => c.dataset.path === pathB);
+  const first = new Map(cells.map((c) => [c, c.getBoundingClientRect()]));   // First
+
+  [clips[i], clips[j]] = [clips[j], clips[i]];                // reorder state
+  if (cellA && cellB) _swapDomNodes(cellA, cellB);            // reorder DOM in place
+
+  const last = new Map(cells.map((c) => [c, c.getBoundingClientRect()]));    // Last (one reflow)
+  const moved = [];
+  cells.forEach((c) => {                                       // Invert
+    const f = first.get(c), l = last.get(c);
+    const dx = f.left - l.left, dy = f.top - l.top;
+    if (!dx && !dy) return;
+    c.style.transition = "none";
+    c.style.transform = `translate(${dx}px, ${dy}px)`;
+    moved.push(c);
+  });
+  void dom.theaterGrid.offsetHeight;                          // commit the inverted start position
+  moved.forEach((c) => {                                       // Play — glide to natural spots
+    c.style.transition = "transform 0.22s ease";
+    c.style.transform = "";
+  });
+  setTimeout(() => moved.forEach((c) => {                      // clear inline styles once settled
+    c.style.transition = "";
+    c.style.transform = "";
+  }), 280);
+
   // Persist: reorder theater.json + auto-save the loaded playlist (mirrors remove/loop)
   const paths = clips.map((c) => c.path);
   await api.post("/api/theater/reorder", { paths }).catch(() => {});
