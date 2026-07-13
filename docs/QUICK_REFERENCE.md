@@ -67,6 +67,7 @@ API Routes:
   POST /api/theater                      ← Add clip to Theater
   DEL  /api/theater/<path>               ← Remove clip
   POST /api/theater/layout               ← Save workspace panel positions
+  POST /api/theater/reorder              ← Reorder clips to given path order (drag-swap)
   POST /api/theater/loop                 ← Set loop start/end on clip
   GET  /api/playlists                    ← All saved playlists
   POST /api/playlists                    ← Save/update playlist (upsert by name)
