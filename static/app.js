@@ -587,6 +587,9 @@ function renderVideoGrid(videos) {
         <button class="delete-video-btn" data-tooltip="Delete video" data-path="${video.path}">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
+        <button class="rename-video-btn" data-tooltip="Rename (in-app label)" data-path="${video.path}">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+        </button>
       </div>
       <div class="video-info">
         <span class="video-name" title="${video.filename}">${video.name}</span>
@@ -596,7 +599,7 @@ function renderVideoGrid(videos) {
 
     // Click thumbnail to play
     card.querySelector(".video-thumb").addEventListener("click", (e) => {
-      if (e.target.closest(".add-theater-btn") || e.target.closest(".delete-video-btn")) return;
+      if (e.target.closest(".add-theater-btn") || e.target.closest(".delete-video-btn") || e.target.closest(".rename-video-btn")) return;
       playVideo(video);
     });
 
@@ -638,11 +641,88 @@ function renderVideoGrid(videos) {
       deleteVideo(video);
     });
 
+    // Rename (in-app label) button — inline-edits the name; disk file untouched
+    card.querySelector(".rename-video-btn").addEventListener("click", (e) => {
+      e.stopPropagation();
+      startInlineRename(card.querySelector(".video-name"), video, {
+        onSaved: (newName) => {
+          // Keep the add-to-theater snapshot in sync so a later add carries the label
+          const addBtn = card.querySelector(".add-theater-btn");
+          if (addBtn) addBtn.dataset.video = JSON.stringify(video).replace(/'/g, "&#39;");
+        },
+      });
+    });
+
     dom.videoGrid.appendChild(card);
     bentoSpan(card); // provisional 16:9 span; corrected when the thumbnail loads
     // Re-span the moment content-visibility renders the card for real (on scroll)
     card.addEventListener("contentvisibilityautostatechange", () => bentoSpan(card));
   });
+}
+
+// ── Inline Rename (in-app display label) ─────────────────────
+// Turns a clip's name label into an editable field. Saving stores a display
+// label keyed by the clip's PATH — the file on disk is never renamed. Enter or
+// blur commits; Esc cancels; an empty value clears the label (reverts to filename).
+// opts.host is an element that gets a `.renaming` class for the edit's duration
+// (used by theater cells to keep their hover overlay visible while editing).
+function startInlineRename(labelEl, clip, opts = {}) {
+  if (!labelEl || labelEl.querySelector("input")) return; // already editing
+  const original = clip.name;
+  const host = opts.host || null;
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "rename-input";
+  input.value = original;
+  input.maxLength = 200;
+
+  labelEl.textContent = "";
+  labelEl.classList.add("editing");
+  host && host.classList.add("renaming");
+  labelEl.appendChild(input);
+  input.focus();
+  input.select();
+
+  // Keep pointer/keyboard interaction inside the field from reaching the
+  // card's play handler or the theater tile's drag-to-swap.
+  ["mousedown", "click", "dblclick"].forEach((ev) =>
+    input.addEventListener(ev, (e) => e.stopPropagation()));
+
+  let done = false;
+  const restore = (text) => {
+    labelEl.classList.remove("editing");
+    host && host.classList.remove("renaming");
+    labelEl.textContent = text;
+    labelEl.title = text;
+  };
+
+  const finish = async (commit) => {
+    if (done) return;
+    done = true;
+    input.removeEventListener("blur", onBlur);
+    if (!commit) { restore(original); return; }
+    const value = input.value.trim();
+    try {
+      const res = await api.post("/api/clip-name", { path: clip.path, name: value });
+      const newName = res.name || original;
+      restore(newName);
+      clip.name = newName;
+      opts.onSaved && opts.onSaved(newName);
+      toast(value ? `Renamed to "${newName}"` : "Name reset to filename", "info");
+    } catch (err) {
+      console.error("Rename error:", err);
+      restore(original);
+      toast("Rename failed", "error");
+    }
+  };
+
+  const onBlur = () => finish(true);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); input.blur(); }
+    else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", onBlur);
 }
 
 // ── Play Single Video (Draggable/Resizable Popup) ────────────
@@ -1126,6 +1206,9 @@ function renderTheater() {
           <button class="icon-btn-sm" data-action="toggle-mute" data-tooltip="Toggle Sound">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/></svg>
           </button>
+          <button class="icon-btn-sm" data-action="rename" data-tooltip="Rename (in-app label)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+          </button>
           <button class="icon-btn-sm danger-btn" data-action="remove" data-tooltip="Remove from ${state.theaterName}">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
@@ -1169,6 +1252,18 @@ function renderTheater() {
     cell.querySelector('[data-action="toggle-mute"]').addEventListener("click", (e) => {
       video.muted = !video.muted;
       e.currentTarget.classList.toggle("unmuted", !video.muted);
+    });
+
+    // Rename (in-app label) — inline-edits the tile name; disk file untouched
+    cell.querySelector('[data-action="rename"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      startInlineRename(cell.querySelector(".theater-clip-name"), clip, {
+        host: cell, // keeps the hover overlay visible while editing
+        onSaved: (newName) => {
+          const tc = state.theaterClips.find((c) => c.path === clip.path);
+          if (tc) tc.name = newName; // future renders + workspace pick up the label
+        },
+      });
     });
 
     cell.querySelector('[data-action="remove"]').addEventListener("click", async () => {

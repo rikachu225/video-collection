@@ -55,6 +55,7 @@ CONFIG_FILE = DATA_DIR / "config.json"
 PLAYLISTS_FILE = DATA_DIR / "playlists.json"
 THEATER_FILE = DATA_DIR / "theater.json"
 FOLDER_LAYOUTS_FILE = DATA_DIR / "folder_layouts.json"
+CLIP_NAMES_FILE = DATA_DIR / "clip_names.json"  # in-app display labels keyed by clip path (disk files untouched)
 CACHE_DIR = DATA_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
@@ -214,6 +215,30 @@ def _unique_filename(directory, base_name, ext):
     while (Path(directory) / f"{base_name} ({counter}){ext}").exists():
         counter += 1
     return f"{base_name} ({counter}){ext}"
+
+
+def _sanitize_label(name, max_length=200):
+    """Clean a user-supplied display label. Unlike a filename, a label never touches the
+    filesystem, so ':' '/' '?' are allowed — we only drop control chars and cap length."""
+    cleaned = "".join(ch for ch in (name or "") if ch.isprintable())
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return cleaned[:max_length].strip()
+
+
+def _load_clip_names():
+    """Map of {relative_path: display_label}. Disk files are never renamed; this is the label store."""
+    return _load_json(CLIP_NAMES_FILE, {})
+
+
+def _apply_clip_names(clips, names=None):
+    """Overwrite each clip's `name` with its saved display label, if one exists (in place)."""
+    if names is None:
+        names = _load_clip_names()
+    for clip in clips:
+        label = names.get(clip.get("path"))
+        if label:
+            clip["name"] = label
+    return clips
 
 
 def _resolve_folder_for_source(folder_name, source_idx):
@@ -616,6 +641,34 @@ def delete_folder_video():
     return jsonify({"status": "deleted", "path": rel_path})
 
 
+@app.route("/api/clip-name", methods=["POST"])
+def set_clip_name():
+    """Set (or clear) a clip's in-app display label. The file on disk is NEVER renamed —
+    the label is stored keyed by the clip's path and overrides `name` wherever the clip
+    is listed. An empty/blank name clears the override, reverting to the filename stem."""
+    body = request.json or {}
+    rel_path = (body.get("path") or "").strip()
+    if not rel_path:
+        return jsonify({"error": "Path is required"}), 400
+
+    # Validate the path with the same traversal-safe resolver used everywhere else.
+    # We don't touch the file, but we refuse to store labels for junk/unresolvable paths.
+    abs_path = _resolve_video_path(rel_path)
+    if not abs_path:
+        return jsonify({"error": "Video not found"}), 404
+
+    label = _sanitize_label(body.get("name", ""))
+    names = _load_clip_names()
+    if label:
+        names[rel_path] = label
+        display = label
+    else:
+        names.pop(rel_path, None)      # clear override
+        display = abs_path.stem        # revert to the real filename stem
+    _save_json(CLIP_NAMES_FILE, names)
+    return jsonify({"path": rel_path, "name": display})
+
+
 # ── API: Branding ────────────────────────────────────────────────
 @app.route("/api/branding", methods=["GET"])
 def get_branding():
@@ -904,14 +957,16 @@ def get_videos(folder):
     if not folder_path or not folder_path.exists():
         return jsonify({"error": "Folder not found"}), 404
 
+    names = _load_clip_names()
     videos = []
     for f in sorted(folder_path.iterdir()):
         if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS:
+            rel = f"{folder}/{f.name}"
             videos.append({
-                "name": f.stem,
+                "name": names.get(rel, f.stem),  # in-app label wins over the filename stem
                 "filename": f.name,
                 "folder": folder,
-                "path": f"{folder}/{f.name}",
+                "path": rel,
                 "size": f.stat().st_size,
                 "ext": f.suffix.lower(),
             })
@@ -1137,8 +1192,9 @@ def _placeholder_thumb():
 # ── API: Theater State ────────────────────────────────────────
 @app.route("/api/theater", methods=["GET"])
 def get_theater():
-    """Get current theater clips."""
+    """Get current theater clips (with in-app display labels applied)."""
     data = _load_json(THEATER_FILE, {"clips": []})
+    _apply_clip_names(data.get("clips", []))
     return jsonify(data)
 
 
@@ -1246,8 +1302,11 @@ def save_folder_layout(folder_key):
 # ── API: Playlists ────────────────────────────────────────────
 @app.route("/api/playlists", methods=["GET"])
 def get_playlists():
-    """Get all saved playlists."""
+    """Get all saved playlists (with in-app display labels applied)."""
     data = _load_json(PLAYLISTS_FILE, {"playlists": []})
+    names = _load_clip_names()
+    for playlist in data.get("playlists", []):
+        _apply_clip_names(playlist.get("clips", []), names)
     return jsonify(data)
 
 

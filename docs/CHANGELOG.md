@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.5.3 - 2026-07-13
+### Added
+- **Rename clips (in-app display labels)**: a pencil action on browse cards and Sanctuary/theater tiles turns the clip's name into an inline field (Enter/blur saves, Esc cancels, empty reverts to the filename). Labels are stored in `data/clip_names.json` keyed by the clip's path and applied server-side in `/api/videos`, `/api/theater`, and `/api/playlists` — so the same label shows everywhere the clip appears (browse, theater, workspace title, popup, AI context). New endpoint `POST /api/clip-name` (traversal-safe; validates the path with `_resolve_video_path`; sanitizes the label; caps length at 200). **The file on disk is never renamed** — this is a label overlay, not a filesystem rename. 11 pytest added.
+
 ## v2.5.2 - 2026-07-13
 ### Fixed
 - **Workspace stacking**: clicking (or resizing) a panel no longer flattens every other panel's z-index. The old two-level scheme (clicked panel `10`, everyone else `1`) meant all inactive panels tied at `1` and reverted to DOM/build order — so clicking a far-left panel could drop a far-right panel you'd deliberately placed on top *behind* its neighbor. Replaced with a monotonic "bring to front" counter (`topZ`): clicking a panel raises only that panel, and every other panel keeps the stack you arranged. Grabbing a resize corner now also brings its panel forward. Panels still initialize in clip order; stacking order is not persisted across reloads.

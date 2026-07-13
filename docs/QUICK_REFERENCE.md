@@ -58,6 +58,7 @@ API Routes:
   GET  /api/videos/<folder>?source=N     ← Videos in folder (optional source disambiguation)
   GET  /api/stream/<path>                ← Video streaming with HTTP Range Requests (1MB chunks)
   GET  /api/thumbnail/<path>             ← ffmpeg-generated poster frames
+  POST /api/clip-name                     ← Set/clear a clip's in-app display label {path, name} (disk file NOT renamed; empty name reverts to filename)
   GET  /api/branding                      ← Get custom site + theater names
   POST /api/branding                      ← Update custom names {siteName, theaterName}
   GET  /api/sources                       ← List configured media roots
@@ -208,6 +209,7 @@ Toast container:    9999
 - `data/config.json` - media source paths (machine-specific)
 - `data/theater.json` - current theater state (clips, loops, layouts)
 - `data/playlists.json` - saved playlists
+- `data/clip_names.json` - in-app display labels keyed by clip path (disk files never renamed; applied to /api/videos, /api/theater, /api/playlists)
 - `data/thumbnails/` - generated poster frames
 
 ## Portability & Cross-Platform Transfer

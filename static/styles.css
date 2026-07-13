@@ -2193,6 +2193,53 @@ html, body {
   box-shadow: 0 0 12px rgba(255, 51, 85, 0.3);
 }
 
+/* ── Rename (in-app label) ─────────────────────────────────── */
+/* Browse card pencil — hover action, tucked below the add-to-theater button */
+.rename-video-btn {
+  position: absolute;
+  top: 48px;
+  right: 8px;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(0, 240, 255, 0.3);
+  border-radius: 50%;
+  color: var(--cyan);
+  cursor: pointer;
+  opacity: 0;
+  transform: scale(0.8);
+  transition: all 0.2s;
+  z-index: 5;
+}
+.video-thumb:hover .rename-video-btn { opacity: 1; transform: scale(1); }
+.rename-video-btn:hover {
+  background: rgba(0, 240, 255, 0.2);
+  border-color: var(--cyan);
+  box-shadow: var(--glow-cyan);
+}
+
+/* Inline edit field replaces the name label while renaming */
+.video-name.editing, .theater-clip-name.editing { display: block; overflow: visible; }
+.rename-input {
+  pointer-events: auto;            /* overrides the theater overlay's pointer-events:none */
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  color: var(--text-primary);
+  background: rgba(0, 0, 0, 0.6);
+  border: 1px solid var(--cyan);
+  border-radius: 4px;
+  padding: 1px 5px;
+  outline: none;
+}
+.rename-input:focus { box-shadow: var(--glow-cyan); }
+/* Keep a theater tile's hover overlay visible/interactive while its name is being edited */
+.theater-cell.renaming .theater-cell-overlay { opacity: 1; pointer-events: auto; }
+
 /* ══════════════════════════════════════════════════════════════
    Import Modal
    ══════════════════════════════════════════════════════════════ */
