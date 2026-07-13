@@ -1164,6 +1164,25 @@ def remove_from_theater(video_path):
     return jsonify(data)
 
 
+@app.route("/api/theater/reorder", methods=["POST"])
+def reorder_theater():
+    """Reorder theater clips to match the given list of paths (Sanctuary tile swap/reorder).
+
+    Full clip objects are preserved (only their order changes). Unknown paths are
+    ignored; any existing clips omitted from the list keep their order at the end.
+    """
+    body = request.json or {}
+    order = body.get("paths", [])
+    data = _load_json(THEATER_FILE, {"clips": []})
+    by_path = {c["path"]: c for c in data["clips"]}
+    reordered = [by_path[p] for p in order if p in by_path]
+    seen = {p for p in order if p in by_path}
+    reordered += [c for c in data["clips"] if c["path"] not in seen]
+    data["clips"] = reordered
+    _save_json(THEATER_FILE, data)
+    return jsonify(data)
+
+
 @app.route("/api/theater/layout", methods=["POST"])
 def update_theater_layout():
     """Save workspace layout positions for theater clips."""

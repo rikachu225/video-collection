@@ -985,6 +985,71 @@ async function loadTheater() {
   renderTheater();
 }
 
+// ── Sanctuary tile drag-to-swap ───────────────────────────────
+// Grab a tile's video area and drop it on another tile to trade places.
+// Listeners are module-scoped (added once) so re-renders don't stack them.
+let theaterDrag = null;          // { path, name, startX, startY, moved, cell, chip }
+let theaterSuppressClick = false;
+
+async function swapTheaterClips(pathA, pathB) {
+  const clips = state.theaterClips;
+  const i = clips.findIndex((c) => c.path === pathA);
+  const j = clips.findIndex((c) => c.path === pathB);
+  if (i < 0 || j < 0 || i === j) return;
+  [clips[i], clips[j]] = [clips[j], clips[i]];
+  renderTheater();
+  // Persist: reorder theater.json + auto-save the loaded playlist (mirrors remove/loop)
+  const paths = clips.map((c) => c.path);
+  await api.post("/api/theater/reorder", { paths }).catch(() => {});
+  if (state.loadedPlaylistName) {
+    await api.post("/api/playlists", { name: state.loadedPlaylistName, clips }).catch(() => {});
+  }
+}
+
+function _clearDropTargets() {
+  document.querySelectorAll(".theater-cell.theater-drop-target")
+    .forEach((c) => c.classList.remove("theater-drop-target"));
+}
+
+document.addEventListener("mousemove", (e) => {
+  if (!theaterDrag) return;
+  if (!theaterDrag.moved && Math.hypot(e.clientX - theaterDrag.startX, e.clientY - theaterDrag.startY) < 5) return;
+  if (!theaterDrag.moved) {
+    theaterDrag.moved = true;
+    theaterDrag.cell.classList.add("theater-dragging");
+    const v = theaterDrag.cell.querySelector(".theater-video"); // stop a hover-preview mid-grab
+    if (v && v._hoverStarted) { v._hoverStarted = false; v.pause(); }
+    const chip = document.createElement("div");
+    chip.className = "theater-drag-chip";
+    chip.textContent = theaterDrag.name;
+    document.body.appendChild(chip);
+    theaterDrag.chip = chip;
+  }
+  e.preventDefault();
+  theaterDrag.chip.style.left = `${e.clientX + 14}px`;
+  theaterDrag.chip.style.top = `${e.clientY + 14}px`;
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const target = el && el.closest(".theater-cell");
+  _clearDropTargets();
+  if (target && target !== theaterDrag.cell) target.classList.add("theater-drop-target");
+});
+
+document.addEventListener("mouseup", (e) => {
+  if (!theaterDrag) return;
+  const drag = theaterDrag;
+  theaterDrag = null;
+  if (drag.chip) drag.chip.remove();
+  _clearDropTargets();
+  drag.cell.classList.remove("theater-dragging");
+  if (!drag.moved) return;                        // was a click, not a drag
+  theaterSuppressClick = true;                    // swallow the click that follows a drag
+  setTimeout(() => { theaterSuppressClick = false; }, 250);
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const target = el && el.closest(".theater-cell");
+  if (!target || target === drag.cell) return;    // dropped on nothing / itself
+  swapTheaterClips(drag.path, target.dataset.path);
+});
+
 function renderTheater() {
   dom.theaterGrid.innerHTML = "";
   const hasClips = state.theaterClips.length > 0;
@@ -1114,6 +1179,7 @@ function renderTheater() {
 
     // Click video area to open popup player (not control buttons)
     cell.querySelector(".theater-video-wrap").addEventListener("click", (e) => {
+      if (theaterSuppressClick) { theaterSuppressClick = false; return; }  // just finished a drag
       if (e.target.closest(".theater-cell-controls") || e.target.closest(".icon-btn-sm")) return;
       playVideo({
         path: clip.path,
@@ -1147,6 +1213,14 @@ function renderTheater() {
       video._hoverStarted = false;
       video.pause();
       video.currentTime = clip.loopStart != null ? clip.loopStart : 2;
+    });
+
+    // Drag-to-swap: mousedown on the video area starts a drag (5px threshold in the
+    // module-scoped mousemove); controls/buttons are excluded so they still click.
+    wrap.addEventListener("mousedown", (e) => {
+      if (e.button !== 0) return;
+      if (e.target.closest(".theater-cell-controls") || e.target.closest(".icon-btn-sm")) return;
+      theaterDrag = { path: clip.path, name: clip.name, startX: e.clientX, startY: e.clientY, moved: false, cell };
     });
 
     // Bento: adopt the clip's natural aspect once metadata arrives, then re-span

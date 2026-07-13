@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.5.1 - 2026-07-10
+### Added
+- **Drag-to-swap Sanctuary tiles**: grab a clip by its video area and drop it on another to trade places — curate which clips sit at the top of the viewport without free-floating overlap (they stay snapped to the bento grid). A 5px threshold keeps plain click (open popup) and hover-preview intact; controls/loop inputs are excluded from the grab. Order persists via `POST /api/theater/reorder` and auto-saves to the loaded playlist. Desktop/mouse for now.
+
 ## v2.5.0 - 2026-07-10
 ### Added
 - **Bento grid** 🍱: browse and Theater grids now honor each clip's true aspect ratio — portrait (9:16) clips render as tall tiles and landscape tiles tetris-fill around them (`grid-auto-flow: dense` + per-card row spans). Works with `content-visibility: auto` (spans are computed arithmetically and self-correct on reveal via `contentvisibilityautostatechange`).

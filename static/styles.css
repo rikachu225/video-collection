@@ -875,6 +875,29 @@ html, body {
   object-fit: contain;
 }
 
+/* ── Sanctuary tile drag-to-swap ─────────────────────────── */
+.theater-video-wrap { cursor: grab; }
+.theater-cell.theater-dragging { opacity: 0.4; }
+.theater-cell.theater-dragging .theater-video-wrap { cursor: grabbing; }
+.theater-cell.theater-drop-target {
+  box-shadow: 0 0 0 2px rgba(0, 229, 255, 0.9), 0 0 18px rgba(0, 229, 255, 0.35);
+}
+.theater-drag-chip {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  background: rgba(14, 16, 24, 0.92);
+  border: 1px solid rgba(0, 229, 255, 0.5);
+  color: #cfeffd;
+  font-size: 12px;
+  padding: 4px 9px;
+  border-radius: 8px;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .theater-cell-overlay {
   position: absolute;
   bottom: 0;
