@@ -2240,6 +2240,15 @@ html, body {
 /* Keep a theater tile's hover overlay visible/interactive while its name is being edited */
 .theater-cell.renaming .theater-cell-overlay { opacity: 1; pointer-events: auto; }
 
+/* Tile being removed: fade + shrink, then the survivors FLIP into place.
+   Only opacity/transform — neither reflows the grid, so the glide starts clean. */
+.theater-cell.theater-removing {
+  transition: opacity 0.16s ease, transform 0.16s ease;
+  opacity: 0;
+  transform: scale(0.92);
+  pointer-events: none;
+}
+
 /* ══════════════════════════════════════════════════════════════
    Import Modal
    ══════════════════════════════════════════════════════════════ */

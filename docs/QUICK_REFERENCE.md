@@ -209,7 +209,7 @@ Toast container:    9999
 - `data/config.json` - media source paths (machine-specific)
 - `data/theater.json` - current theater state (clips, loops, layouts)
 - `data/playlists.json` - saved playlists
-- `data/clip_names.json` - in-app display labels keyed by clip path (disk files never renamed; applied to /api/videos, /api/theater, /api/playlists)
+- `data/clip_names.json` - in-app display labels keyed by clip path (disk files never renamed; applied to /api/videos, /api/playlists, and ALL theater responses via `_theater_json()`)
 - `data/thumbnails/` - generated poster frames
 
 ## Portability & Cross-Platform Transfer
@@ -263,3 +263,5 @@ No frontend dependencies. No build step. No npm.
 | 5 | `start.bat` without `cd /d "%~dp0"` | Required for shell:startup folder compatibility |
 | 6 | Trust user-supplied paths because LAN guard is on | Defense-in-depth: reject `..`/absolute paths AND verify resolved path lives inside an allowed root via `_is_contained()` |
 | 7 | Ship static asset changes without bumping `?v=` | Bump the `?v=` query on css/js links in index.html — browsers heuristic-cache unversioned assets |
+| 8 | Call `renderTheater()` after mutating one tile | Full rebuild re-creates every `<video>` → all clips reload/flicker. Mutate the DOM in place + FLIP-glide (see `swapTheaterClips`/`removeTheaterClip`). Needs `void grid.offsetHeight` between Invert and Play or transforms strand |
+| 9 | `return jsonify(data)` from a route returning theater clips | Use `_theater_json(data)` — theater.json holds the name from when the clip was added, so any raw response reverts in-app labels. Same for adopting a mutation response into `state.theaterClips`: splice locally instead |

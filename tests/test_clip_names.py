@@ -139,6 +139,74 @@ def test_nonexistent_path_rejected(tmp_path, monkeypatch):
     assert r.status_code == 404
 
 
+# ── Labels must survive EVERY endpoint that returns clips, not just the GETs.
+# Renaming from a tile only writes clip_names.json — theater.json keeps the old
+# name — so any response built straight from theater.json reverts the label.
+def _seed_theater(tmp_path, clips):
+    (tmp_path / "theater.json").write_text(json.dumps({"clips": clips}), encoding="utf-8")
+
+
+def _two_clips():
+    return [{"path": "Nature/river.mp4", "name": "river"},
+            {"path": "Nature/forest.mp4", "name": "forest"}]
+
+
+def test_delete_response_keeps_labels(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    _seed_theater(tmp_path, _two_clips())
+    _seed_clip_names(tmp_path, {"Nature/river.mp4": "Calm River"})
+    c = server.app.test_client()
+    clips = c.delete("/api/theater/Nature/forest.mp4").get_json()["clips"]
+    assert [x["name"] for x in clips] == ["Calm River"]
+
+
+def test_add_response_applies_label(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    _seed_clip_names(tmp_path, {"Nature/river.mp4": "Calm River"})
+    c = server.app.test_client()
+    r = c.post("/api/theater", json={"path": "Nature/river.mp4", "name": "river"})
+    assert r.get_json()["clips"][0]["name"] == "Calm River"
+
+
+def test_reorder_response_applies_labels(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    _seed_theater(tmp_path, _two_clips())
+    _seed_clip_names(tmp_path, {"Nature/river.mp4": "Calm River"})
+    c = server.app.test_client()
+    clips = c.post("/api/theater/reorder",
+                   json={"paths": ["Nature/forest.mp4", "Nature/river.mp4"]}).get_json()["clips"]
+    assert [x["name"] for x in clips] == ["forest", "Calm River"]
+
+
+def test_loop_response_applies_labels(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    _seed_theater(tmp_path, _two_clips())
+    _seed_clip_names(tmp_path, {"Nature/river.mp4": "Calm River"})
+    c = server.app.test_client()
+    clips = c.post("/api/theater/loop",
+                   json={"path": "Nature/river.mp4", "loopStart": 5, "loopEnd": 9}).get_json()["clips"]
+    assert clips[0]["name"] == "Calm River"
+
+
+def test_theater_layout_response_applies_labels(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    _seed_theater(tmp_path, _two_clips())
+    _seed_clip_names(tmp_path, {"Nature/river.mp4": "Calm River"})
+    c = server.app.test_client()
+    clips = c.post("/api/theater/layout", json={"layouts": []}).get_json()["clips"]
+    assert clips[0]["name"] == "Calm River"
+
+
+def test_playlist_load_response_applies_labels(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    (tmp_path / "playlists.json").write_text(
+        json.dumps({"playlists": [{"name": "Chill", "clips": _two_clips()}]}), encoding="utf-8")
+    _seed_clip_names(tmp_path, {"Nature/river.mp4": "Calm River"})
+    c = server.app.test_client()
+    clips = c.post("/api/playlists/Chill/load").get_json()["clips"]
+    assert [x["name"] for x in clips] == ["Calm River", "forest"]
+
+
 def test_override_persists_across_reload(tmp_path, monkeypatch):
     server = make_client(tmp_path, monkeypatch)
     _media_root(tmp_path)

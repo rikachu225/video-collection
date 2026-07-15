@@ -1122,6 +1122,64 @@ async function swapTheaterClips(pathA, pathB) {
   }
 }
 
+// Remove a Sanctuary tile without rebuilding the grid: the tile fades out and the
+// survivors glide into their new spots (FLIP). renderTheater() would re-create every
+// <video>, forcing all clips to reload — the same rebuild we removed from drag-to-swap.
+async function removeTheaterClip(clip, cell) {
+  const idx = state.theaterClips.findIndex((c) => c.path === clip.path);
+  if (idx === -1) return;
+
+  // Drop it from state locally rather than adopting the response wholesale — the
+  // in-memory clips carry labels/loops the user may have just set.
+  state.theaterClips.splice(idx, 1);
+
+  // Release the stream before detaching (mirrors the workspace panel remove)
+  const vid = cell.querySelector("video");
+  if (vid) { vid.pause(); vid.removeAttribute("src"); vid.load(); }
+
+  const survivors = [...dom.theaterGrid.querySelectorAll(".theater-cell")].filter((c) => c !== cell);
+  cell.classList.add("theater-removing");          // fade/scale out (transform ⇒ no reflow)
+  await new Promise((r) => setTimeout(r, 160));
+
+  const first = new Map(survivors.map((c) => [c, c.getBoundingClientRect()]));  // First
+  cell.remove();                                                                // grid reflows
+  const last = new Map(survivors.map((c) => [c, c.getBoundingClientRect()]));   // Last
+
+  const moved = [];
+  survivors.forEach((c) => {                                                    // Invert
+    const f = first.get(c), l = last.get(c);
+    const dx = f.left - l.left, dy = f.top - l.top;
+    if (!dx && !dy) return;
+    c.style.transition = "none";
+    c.style.transform = `translate(${dx}px, ${dy}px)`;
+    moved.push(c);
+  });
+  void dom.theaterGrid.offsetHeight;                          // commit the inverted start position
+  moved.forEach((c) => {                                      // Play — glide to natural spots
+    c.style.transition = "transform 0.22s ease";
+    c.style.transform = "";
+  });
+  setTimeout(() => moved.forEach((c) => {                     // clear inline styles once settled
+    c.style.transition = "";
+    c.style.transform = "";
+  }), 280);
+
+  if (state.theaterClips.length === 0) renderTheater();       // last clip → show the empty state
+
+  // Persist: remove server-side + auto-save the loaded playlist (mirrors swap/loop)
+  try {
+    await api.del(`/api/theater/${encodeURIComponent(clip.path)}`);
+    if (state.loadedPlaylistName) {
+      await api.post("/api/playlists", { name: state.loadedPlaylistName, clips: state.theaterClips });
+    }
+    toast(`Removed "${clip.name}"`, "info");
+  } catch (err) {
+    console.error("Remove clip error:", err);
+    toast("Failed to remove clip", "error");
+    loadTheater();                                            // resync from the server
+  }
+}
+
 function _clearDropTargets() {
   document.querySelectorAll(".theater-cell.theater-drop-target")
     .forEach((c) => c.classList.remove("theater-drop-target"));
@@ -1266,18 +1324,9 @@ function renderTheater() {
       });
     });
 
-    cell.querySelector('[data-action="remove"]').addEventListener("click", async () => {
-      const data = await api.del(`/api/theater/${encodeURIComponent(clip.path)}`);
-      state.theaterClips = data.clips || [];
-      // Auto-save to loaded playlist
-      if (state.loadedPlaylistName) {
-        await api.post("/api/playlists", {
-          name: state.loadedPlaylistName,
-          clips: state.theaterClips,
-        });
-      }
-      renderTheater();
-      toast(`Removed "${clip.name}"`, "info");
+    cell.querySelector('[data-action="remove"]').addEventListener("click", async (e) => {
+      e.stopPropagation();
+      await removeTheaterClip(clip, cell);
     });
 
     cell.querySelector('[data-action="set-loop"]').addEventListener("click", async () => {

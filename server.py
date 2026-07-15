@@ -241,6 +241,17 @@ def _apply_clip_names(clips, names=None):
     return clips
 
 
+def _theater_json(data):
+    """Single exit point for any response carrying theater clips.
+
+    theater.json stores whatever name a clip had when it was added; renaming only
+    writes clip_names.json. So EVERY response built from theater.json must re-apply
+    labels or it silently reverts them — route responses included, not just the GET.
+    """
+    _apply_clip_names(data.get("clips", []))
+    return jsonify(data)
+
+
 def _resolve_folder_for_source(folder_name, source_idx):
     """Resolve a folder path given folder name and source index."""
     sources = _get_media_roots()
@@ -1193,9 +1204,7 @@ def _placeholder_thumb():
 @app.route("/api/theater", methods=["GET"])
 def get_theater():
     """Get current theater clips (with in-app display labels applied)."""
-    data = _load_json(THEATER_FILE, {"clips": []})
-    _apply_clip_names(data.get("clips", []))
-    return jsonify(data)
+    return _theater_json(_load_json(THEATER_FILE, {"clips": []}))
 
 
 @app.route("/api/theater", methods=["POST"])
@@ -1208,7 +1217,7 @@ def update_theater():
     if clip["path"] not in existing_paths:
         data["clips"].append(clip)
         _save_json(THEATER_FILE, data)
-    return jsonify(data)
+    return _theater_json(data)
 
 
 @app.route("/api/theater/<path:video_path>", methods=["DELETE"])
@@ -1217,7 +1226,7 @@ def remove_from_theater(video_path):
     data = _load_json(THEATER_FILE, {"clips": []})
     data["clips"] = [c for c in data["clips"] if c["path"] != video_path]
     _save_json(THEATER_FILE, data)
-    return jsonify(data)
+    return _theater_json(data)
 
 
 @app.route("/api/theater/reorder", methods=["POST"])
@@ -1236,7 +1245,7 @@ def reorder_theater():
     reordered += [c for c in data["clips"] if c["path"] not in seen]
     data["clips"] = reordered
     _save_json(THEATER_FILE, data)
-    return jsonify(data)
+    return _theater_json(data)
 
 
 @app.route("/api/theater/layout", methods=["POST"])
@@ -1255,7 +1264,7 @@ def update_theater_layout():
             clip["wsHeight"] = layout.get("wsHeight")
             clip["wsVolume"] = layout.get("wsVolume")
     _save_json(THEATER_FILE, data)
-    return jsonify(data)
+    return _theater_json(data)
 
 
 @app.route("/api/theater/loop", methods=["POST"])
@@ -1273,7 +1282,7 @@ def update_loop():
             clip["loopEnd"] = loop_end
             break
     _save_json(THEATER_FILE, data)
-    return jsonify(data)
+    return _theater_json(data)
 
 
 # ── API: Folder Layouts (per-folder video popup positions) ────
@@ -1348,7 +1357,7 @@ def load_playlist(name):
         if pl["name"] == name:
             theater_data = {"clips": pl["clips"]}
             _save_json(THEATER_FILE, theater_data)
-            return jsonify(theater_data)
+            return _theater_json(theater_data)
     return jsonify({"error": "Playlist not found"}), 404
 
 

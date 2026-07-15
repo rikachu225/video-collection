@@ -1,5 +1,10 @@
 # Changelog
 
+## v2.5.5 - 2026-07-15
+### Fixed
+- **Removing a Sanctuary clip rebuilt the whole grid**: the remove handler called `renderTheater()`, re-creating every `<video>` so all clips re-fetched their streams (the "reload"). Same class of bug as the old drag-to-swap rebuild, fixed the same way — `removeTheaterClip()` fades the tile out (opacity/transform only, so no reflow), then FLIP-glides the survivors into their new spots. Verified: surviving cells and their `<video>` elements are the **same DOM nodes** afterwards, so nothing reloads. Removing the last clip still renders the empty state; a failed delete resyncs via `loadTheater()`.
+- **Custom labels reverted on every theater mutation**: only `GET /api/theater` applied clip labels. The add / remove / reorder / loop / layout routes and playlist-load returned `theater.json` raw — and the frontend adopts those responses into `state.theaterClips` — so renaming a clip and then removing *any* clip silently reverted names to filenames (renaming only writes `clip_names.json`; `theater.json` keeps the name from when the clip was added). Every clip-returning response now goes through one `_theater_json()` choke point. The remove handler also splices state locally instead of adopting the response wholesale. 6 pytest added (74 total).
+
 ## v2.5.4 - 2026-07-15
 ### Added
 - **AI: bulk add to the theater** — "add all of these to my Sanctuary" now adds every video in the current folder. `add_to_theater` accepts `'all'`/`'everything'` (the tool description advertises it), dedupes against clips already present, and reports `count`/`skipped`. New `_srv_add_many_to_theater()` does one load+save regardless of clip count instead of rewriting `theater.json` per clip.
