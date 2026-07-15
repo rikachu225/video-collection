@@ -237,6 +237,9 @@ Toast container:    9999
 - **BYOK**: key resolves `GEMINI_API_KEY` env var first, then `geminiApiKey` in git-ignored `data/config.json`. End users paste their own key in **Settings → AI Assistant**; the key is never returned by the API.
 - Backend `ai_agent.py` (tool schema, system prompt, Gemini function-calling loop, executors). Frontend `static/assistant.js` + `static/assistant.css`. Model default `gemini-flash-latest` (auto-tracks newest flash; override in `aiAssistant.model`).
 - Two tool types: **server actions** (loops/playlists/downloads — reuse existing routes) and **UI commands** (play/pause/mute/workspace/switch-view — run by `app.js` globals). A per-request context snapshot resolves "the third clip", "this" (open clip), and "save this playlist" (loaded playlist); every reference is re-validated server-side.
+- **Resolve-by-name → act-by-path**: `resolve_refs()` matches the user's words against the CONTEXT names (which carry in-app labels from `/api/videos` + `/api/theater`), then executors act on the clip's `path`. This is why renamed clips "just work" — and why the AI sees labels without them being on disk.
+- **Custom theater name (v2.5.4)**: `theaterName` rides in the context + system prompt, so "add these to my Sanctuary" maps to the theater tools. Frontend sends `state.theaterName` from `buildContext()`.
+- **Bulk add (v2.5.4)**: `add_to_theater` accepts `'all'`/`'everything'` → adds every video in the current folder via `_srv_add_many_to_theater()` (one load+save, dedupes, reports count/skipped).
 - No destructive deletes via chat. Privacy: chat + library names are sent to Google Gemini.
 
 ## Dependencies

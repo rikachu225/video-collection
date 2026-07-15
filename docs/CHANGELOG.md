@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.5.4 - 2026-07-15
+### Added
+- **AI: bulk add to the theater** — "add all of these to my Sanctuary" now adds every video in the current folder. `add_to_theater` accepts `'all'`/`'everything'` (the tool description advertises it), dedupes against clips already present, and reports `count`/`skipped`. New `_srv_add_many_to_theater()` does one load+save regardless of clip count instead of rewriting `theater.json` per clip.
+- **AI knows your custom theater name** — `theaterName` now rides in the assistant context and the system prompt ("This user calls the theater 'Sanctuary'"), so your own word for it maps to the theater tools and is used in replies. Falls back to "Theater" when unset.
+
+### Fixed
+- **AI: `add_to_theater` silently added only the FIRST match** — it resolved `'all'` to every video but then did `matches[0]`, discarding the rest (its sibling `remove_from_theater` always looped correctly). Now adds every match.
+- **AI search was blind to in-app labels** — `search_videos` globbed the filesystem and matched filename stems only, so a renamed clip couldn't be found by its label. It now matches the label **or** the original filename (find it either way) and reports the current label as the name.
+- **Popup player stopped at the end instead of looping** — the popup `<video>` was the only player missing the `loop` attribute (theater tiles, workspace panels and hover previews all had it). Clicking a clip anywhere (browse grid or Sanctuary tile — both route through `playVideo()`) now loops back to the start when the clip has no A-B loop set. Safe with A-B loops: `setupVideoLoop`'s handler snaps back into the region if playback drifts before `loopStart`.
+
 ## v2.5.3 - 2026-07-13
 ### Added
 - **Rename clips (in-app display labels)**: a pencil action on browse cards and Sanctuary/theater tiles turns the clip's name into an inline field (Enter/blur saves, Esc cancels, empty reverts to the filename). Labels are stored in `data/clip_names.json` keyed by the clip's path and applied server-side in `/api/videos`, `/api/theater`, and `/api/playlists` — so the same label shows everywhere the clip appears (browse, theater, workspace title, popup, AI context). New endpoint `POST /api/clip-name` (traversal-safe; validates the path with `_resolve_video_path`; sanitizes the label; caps length at 200). **The file on disk is never renamed** — this is a label overlay, not a filesystem rename. 11 pytest added.

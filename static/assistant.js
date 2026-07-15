@@ -41,6 +41,7 @@
       };
     }
     return {
+      theaterName: state.theaterName,   // user's own word for the theater (e.g. "Sanctuary")
       currentView: state.currentView,
       currentFolder: state.currentFolder,
       currentSourceIndex: state.currentSourceIndex,

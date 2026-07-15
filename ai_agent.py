@@ -137,9 +137,10 @@ _TOOL_DEFS = {
         "type": "object",
         "properties": {"old": _str("Existing name."), "new": _str("New name.")},
         "required": ["old", "new"]}),
-    "add_to_theater": ("Add a video from the current folder to the theater.", {
+    "add_to_theater": ("Add one video — or every video ('all') — from the current folder to the theater.", {
         "type": "object",
-        "properties": {"video": _str("Video reference: 1-based index or name substring in the current folder.")},
+        "properties": {"video": _str("Video reference: 1-based index, a name substring, or 'all' "
+                                     "to add every video in the current folder.")},
         "required": ["video"]}),
     "remove_from_theater": ("Remove a clip from the theater (does NOT delete the file).", {
         "type": "object", "properties": {"clip": _str("Clip reference: index, name, or 'all'.")},
@@ -190,12 +191,18 @@ def build_tool():
 def build_system_prompt(ctx):
     """Build the system instruction with the live context snapshot."""
     import json as _json
+    theater_name = (ctx.get("theaterName") or "").strip() or "Theater"
     return (
         "You are the in-app assistant for a personal video collection app. "
         "Translate the user's request into the provided tools. Only act on what the user asks. "
+        f"This user calls the theater '{theater_name}'. Treat '{theater_name}' and 'theater' as "
+        "the SAME place — the theater tools act on it, and refer to it as "
+        f"'{theater_name}' when you talk to the user. "
         "Use the CONTEXT below to resolve references like 'the third clip' or 'that video' to a "
         "clip index or name. If a reference is ambiguous (matches several items) or matches none, "
         "ask a brief clarifying question instead of guessing. "
+        "'all of these', 'all of them', 'everything here' means every video in the current folder — "
+        "pass 'all' to add_to_theater. "
         "If a video is currently open (see openVideo in the context), interpret 'this', "
         "'this clip', 'the current one', or 'it' as that open clip — use its theaterIndex. "
         "If a playlist is currently loaded (see loadedPlaylist), 'save this playlist' or "
@@ -206,6 +213,7 @@ def build_system_prompt(ctx):
         "called its tool — if you can't do it, briefly say why instead. "
         "Keep replies short and friendly. After acting, confirm what you did in one sentence.\n\n"
         "CONTEXT (current app state):\n" + _json.dumps({
+            "theaterName": theater_name,
             "currentView": ctx.get("currentView"),
             "currentFolder": ctx.get("currentFolder"),
             "theaterClips": ctx.get("theaterClips", []),
@@ -296,6 +304,26 @@ def _srv_add_to_theater(clip):
         server._save_json(server.THEATER_FILE, data)
 
 
+def _srv_add_many_to_theater(clips):
+    """Bulk-add clips, skipping paths already present. Returns the clips actually added.
+
+    One load + one save regardless of count — "add all" on a large folder must not
+    rewrite theater.json once per clip.
+    """
+    import server
+    data = server._load_json(server.THEATER_FILE, {"clips": []})
+    existing = {c["path"] for c in data["clips"]}
+    added = []
+    for clip in clips:
+        if clip["path"] not in existing:
+            data["clips"].append(clip)
+            existing.add(clip["path"])
+            added.append(clip)
+    if added:
+        server._save_json(server.THEATER_FILE, data)
+    return added
+
+
 def execute_tool(name, args, ctx, sink):
     """Execute one tool call. Returns a JSON-able result dict for the model."""
     args = args or {}
@@ -383,12 +411,15 @@ def execute_tool(name, args, ctx, sink):
         matches = resolve_refs(args.get("video"), ctx.get("currentVideos", []))
         if not matches:
             return {"error": f"No video in the current folder matches '{args.get('video')}'."}
-        _, v = matches[0]
-        clip = {"path": v["path"], "name": v["name"], "filename": v.get("filename"),
-                "folder": v.get("folder"), "loopStart": None, "loopEnd": None}
-        _srv_add_to_theater(clip)
+        # 'all'/'everything' resolves to every video in the folder — add them all,
+        # not just the first (mirrors remove_from_theater).
+        clips = [{"path": v["path"], "name": v["name"], "filename": v.get("filename"),
+                  "folder": v.get("folder"), "loopStart": None, "loopEnd": None}
+                 for _, v in matches]
+        added = _srv_add_many_to_theater(clips)
         sink.mark("theater")
-        return {"status": "ok", "added": v["name"]}
+        return {"status": "ok", "added": [c["name"] for c in added],
+                "count": len(added), "skipped": len(clips) - len(added)}
 
     if name == "remove_from_theater":
         matches = resolve_refs(args.get("clip"), ctx.get("theaterClips", []))
@@ -458,6 +489,9 @@ def _search_videos(query):
     q = query.strip().lower()
     if not q:
         return {"matches": []}
+    # In-app display labels: match them as well as the on-disk filename, and report
+    # the label as the name, so a renamed clip is findable by either.
+    names = server._load_clip_names()
     matches = []
     for source in server._get_media_roots():
         root = server.Path(source["path"])
@@ -465,8 +499,10 @@ def _search_videos(query):
             continue
         for item in root.rglob("*"):
             if item.is_file() and item.suffix.lower() in server.VIDEO_EXTENSIONS:
-                if q in item.stem.lower():
-                    matches.append({"name": item.stem, "folder": item.parent.name})
+                rel = f"{item.parent.name}/{item.name}"
+                display = names.get(rel, item.stem)
+                if q in display.lower() or q in item.stem.lower():
+                    matches.append({"name": display, "folder": item.parent.name})
                     if len(matches) >= 25:
                         return {"matches": matches, "truncated": True}
     return {"matches": matches}
