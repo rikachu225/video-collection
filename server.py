@@ -1231,7 +1231,7 @@ def remove_from_theater(video_path):
 
 @app.route("/api/theater/reorder", methods=["POST"])
 def reorder_theater():
-    """Reorder theater clips to match the given list of paths (Sanctuary tile swap/reorder).
+    """Reorder theater clips to match the given list of paths (theater tile swap/reorder).
 
     Full clip objects are preserved (only their order changes). Unknown paths are
     ignored; any existing clips omitted from the list keep their order at the end.

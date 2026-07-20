@@ -1065,7 +1065,7 @@ async function loadTheater() {
   renderTheater();
 }
 
-// ── Sanctuary tile drag-to-swap ───────────────────────────────
+// ── Theater tile drag-to-swap ───────────────────────────────
 // Grab a tile's video area and drop it on another tile to trade places.
 // Listeners are module-scoped (added once) so re-renders don't stack them.
 let theaterDrag = null;          // { path, name, startX, startY, moved, cell, chip }
@@ -1122,7 +1122,7 @@ async function swapTheaterClips(pathA, pathB) {
   }
 }
 
-// Remove a Sanctuary tile without rebuilding the grid: the tile fades out and the
+// Remove a theater tile without rebuilding the grid: the tile fades out and the
 // survivors glide into their new spots (FLIP). renderTheater() would re-create every
 // <video>, forcing all clips to reload — the same rebuild we removed from drag-to-swap.
 async function removeTheaterClip(clip, cell) {
