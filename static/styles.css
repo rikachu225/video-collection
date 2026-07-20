@@ -875,7 +875,7 @@ html, body {
   object-fit: contain;
 }
 
-/* ── Sanctuary tile drag-to-swap ─────────────────────────── */
+/* ── Theater tile drag-to-swap ─────────────────────────── */
 .theater-video-wrap { cursor: grab; }
 .theater-cell.theater-dragging { opacity: 0.4; }
 .theater-cell.theater-dragging .theater-video-wrap { cursor: grabbing; }

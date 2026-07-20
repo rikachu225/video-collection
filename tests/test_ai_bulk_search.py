@@ -42,7 +42,7 @@ def _saved_clips(tmp_path):
     return json.loads((tmp_path / "theater.json").read_text(encoding="utf-8"))["clips"]
 
 
-# ── Bulk add ("add all of these to my sanctuary") ──
+# ── Bulk add ("add all of these to my theater") ──
 def test_add_to_theater_all_adds_every_video(tmp_path, monkeypatch):
     make_client(tmp_path, monkeypatch)
     r = execute_tool("add_to_theater", {"video": "all"}, _ctx_with_videos(), Sink())
@@ -107,10 +107,10 @@ def test_search_unlabelled_clip_reports_stem(tmp_path, monkeypatch):
     assert [m["name"] for m in r["matches"]] == ["forest"]
 
 
-# ── Custom theater name ("Sanctuary") ──
+# ── Custom theater name ("My Cinema") ──
 def test_system_prompt_includes_custom_theater_name():
-    prompt = build_system_prompt({"theaterName": "Sanctuary", "theaterClips": [], "currentVideos": []})
-    assert "Sanctuary" in prompt
+    prompt = build_system_prompt({"theaterName": "My Cinema", "theaterClips": [], "currentVideos": []})
+    assert "My Cinema" in prompt
 
 
 def test_system_prompt_theater_name_defaults_gracefully():
