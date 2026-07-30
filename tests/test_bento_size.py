@@ -77,3 +77,30 @@ def test_size_travels_into_saved_playlist(tmp_path, monkeypatch):
     c.post("/api/playlists", json={"name": "Chill", "clips": theater["clips"]})
     saved = json.loads((tmp_path / "playlists.json").read_text(encoding="utf-8"))
     assert saved["playlists"][0]["clips"][0]["bentoCols"] == 4
+
+
+# ── Folder layouts hold BOTH popup geometry and tile size, so saves must merge ──
+def test_folder_layout_save_merges_tile_cols(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    c = server.app.test_client()
+    c.post("/api/folder-layouts/0:Nature",
+           json={"videoPath": "Nature/river.mp4",
+                 "layout": {"left": 10, "top": 20, "width": 300, "height": 200}})
+    c.post("/api/folder-layouts/0:Nature",
+           json={"videoPath": "Nature/river.mp4", "layout": {"tileCols": 4}})
+    entry = c.get("/api/folder-layouts/0:Nature").get_json()["Nature/river.mp4"]
+    assert entry["tileCols"] == 4
+    assert entry["left"] == 10 and entry["width"] == 300  # popup geometry survived
+
+
+def test_popup_layout_save_does_not_wipe_tile_cols(tmp_path, monkeypatch):
+    server = make_client(tmp_path, monkeypatch)
+    c = server.app.test_client()
+    c.post("/api/folder-layouts/0:Nature",
+           json={"videoPath": "Nature/river.mp4", "layout": {"tileCols": 4}})
+    c.post("/api/folder-layouts/0:Nature",
+           json={"videoPath": "Nature/river.mp4",
+                 "layout": {"left": 10, "top": 20, "width": 300, "height": 200}})
+    entry = c.get("/api/folder-layouts/0:Nature").get_json()["Nature/river.mp4"]
+    assert entry["tileCols"] == 4  # tile size survived
+    assert entry["left"] == 10

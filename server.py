@@ -1343,7 +1343,9 @@ def save_folder_layout(folder_key):
     data = _load_json(FOLDER_LAYOUTS_FILE, {})
     if folder_key not in data:
         data[folder_key] = {}
-    data[folder_key][video_path] = layout
+    # Merge: one entry carries BOTH the popup geometry and the bento tile size,
+    # so a wholesale overwrite would wipe whichever was saved first.
+    data[folder_key].setdefault(video_path, {}).update(layout)
     _save_json(FOLDER_LAYOUTS_FILE, data)
     return jsonify({"ok": True})
 
