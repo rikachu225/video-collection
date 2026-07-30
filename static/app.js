@@ -548,13 +548,18 @@ function theaterDefaultCols(count) {
 // dividing container width by a column count) is what makes auto-fill grids work.
 function gridTracks(grid) {
   const cs = getComputedStyle(grid);
-  const tracks = cs.gridTemplateColumns.split(" ").map(parseFloat).filter((n) => !isNaN(n));
+  // A grid with no layout box reports the computed value ("repeat(12, 1fr)"),
+  // not resolved tracks — only px values are real.
+  const tracks = cs.gridTemplateColumns.split(" ")
+    .filter((t) => t.endsWith("px")).map(parseFloat).filter((n) => !isNaN(n));
   return { tracks, gap: parseFloat(cs.columnGap) || 16 };
 }
 
 // Pixel width of a tile spanning `cols` tracks (gaps between them included).
+// Null when the grid has no resolved tracks (e.g. hidden) — callers fall back to measuring.
 function bentoTileWidth(grid, cols) {
   const { tracks, gap } = gridTracks(grid);
+  if (!tracks.length) return null;
   const n = Math.max(1, Math.min(cols, tracks.length));
   let w = 0;
   for (let i = 0; i < n; i++) w += tracks[i] || 0;
@@ -721,10 +726,18 @@ function renderVideoGrid(videos) {
       startBentoResize(e, card, "browse", async (cols) => {
         // No local merge: saveFolderLayout merges into folderLayoutCache[folderKey], and
         // state.currentFolderLayouts IS that object, so the re-render sees tileCols too.
-        try {
-          await saveFolderLayout(state.currentFolderKey, video.path, { tileCols: cols });
-        } catch (err) {
-          console.error("Save tile size error:", err);
+        // Capture the previous size FIRST — saveFolderLayout updates the cache optimistically.
+        const prev = (state.currentFolderLayouts || {})[video.path]?.tileCols;
+        const ok = await saveFolderLayout(state.currentFolderKey, video.path, { tileCols: cols });
+        if (!ok) {
+          // Save failed: the optimistic cache write already happened — put the old size
+          // back and re-apply it to the tile so it doesn't sit wrong for the rest of the session.
+          if (state.currentFolderLayouts) {
+            state.currentFolderLayouts[video.path] =
+              Object.assign(state.currentFolderLayouts[video.path] || {}, { tileCols: prev });
+          }
+          const revertedCols = applyBentoCols(card, prev, "browse");
+          bentoSpan(card, bentoTileWidth(dom.videoGrid, revertedCols));
           toast("Couldn't save tile size", "error");
         }
       });
@@ -824,7 +837,7 @@ async function getFolderLayouts(folderKey) {
 }
 
 async function saveFolderLayout(folderKey, videoPath, layout) {
-  if (!folderKey) return;
+  if (!folderKey) return false;
   // Update cache
   if (!folderLayoutCache[folderKey]) folderLayoutCache[folderKey] = {};
   // Merge, mirroring the server: one entry holds BOTH the popup geometry and the bento tile
@@ -833,7 +846,8 @@ async function saveFolderLayout(folderKey, videoPath, layout) {
     Object.assign(folderLayoutCache[folderKey][videoPath] || {}, layout);
   try {
     await api.post(`/api/folder-layouts/${encodeURIComponent(folderKey)}`, { videoPath, layout });
-  } catch (err) { console.error("Save folder layout error:", err); }
+    return true;
+  } catch (err) { console.error("Save folder layout error:", err); return false; }
 }
 
 async function playVideo(video) {

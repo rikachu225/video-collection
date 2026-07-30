@@ -47,7 +47,7 @@
       currentSourceIndex: state.currentSourceIndex,
       theaterClips: (state.theaterClips || []).map((c, i) => ({
         index: i + 1, name: c.name, path: c.path, folder: c.folder,
-        loopStart: c.loopStart, loopEnd: c.loopEnd,
+        loopStart: c.loopStart, loopEnd: c.loopEnd, bentoCols: c.bentoCols,
       })),
       currentVideos: (state.currentVideos || []).map((v, i) => ({
         index: i + 1, name: v.name, path: v.path, folder: v.folder, filename: v.filename,

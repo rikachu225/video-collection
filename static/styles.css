@@ -2269,12 +2269,13 @@ html, body {
   color: var(--cyan);
   cursor: nwse-resize;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.15s;
   z-index: 6;
 }
 
 .video-card:hover .bento-resize-handle,
-.theater-cell:hover .bento-resize-handle { opacity: 0.6; }
+.theater-cell:hover .bento-resize-handle { opacity: 0.6; pointer-events: auto; }
 .bento-resize-handle:hover { opacity: 1; }
 
 /* While dragging, stop the pointer selecting text across the page */
@@ -2282,6 +2283,9 @@ body.bento-resizing { user-select: none; cursor: nwse-resize; }
 
 /* Touch has no hover and the grid is single-column on phones */
 @media (max-width: 640px) { .bento-resize-handle { display: none; } }
+/* Touch devices (tablets included) never get a hover state to reveal the handle,
+   so it would sit invisible yet still swallow taps in the tile's corner. */
+@media (hover: none) { .bento-resize-handle { display: none; } }
 
 /* ══════════════════════════════════════════════════════════════
    Import Modal
