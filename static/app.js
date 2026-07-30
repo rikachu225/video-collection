@@ -719,8 +719,8 @@ function renderVideoGrid(videos) {
     cardResize.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v6h-6"/><path d="M21 21l-7-7"/></svg>`;
     cardResize.addEventListener("mousedown", (e) => {
       startBentoResize(e, card, "browse", async (cols) => {
-        if (!state.currentFolderLayouts[video.path]) state.currentFolderLayouts[video.path] = {};
-        state.currentFolderLayouts[video.path].tileCols = cols;
+        // No local merge: saveFolderLayout merges into folderLayoutCache[folderKey], and
+        // state.currentFolderLayouts IS that object, so the re-render sees tileCols too.
         try {
           await saveFolderLayout(state.currentFolderKey, video.path, { tileCols: cols });
         } catch (err) {
@@ -733,7 +733,7 @@ function renderVideoGrid(videos) {
     // every direct child of the card except the first (the media box), and an absolutely
     // positioned element still reports its height — appending to the card would inflate every
     // tile's row span by ~20px. .video-thumb is the media box and is already position:relative.
-    card.querySelector(".video-thumb").appendChild(cardResize);
+    thumbEl.appendChild(cardResize);
 
     dom.videoGrid.appendChild(card);
     const cardCols = applyBentoCols(
@@ -827,7 +827,10 @@ async function saveFolderLayout(folderKey, videoPath, layout) {
   if (!folderKey) return;
   // Update cache
   if (!folderLayoutCache[folderKey]) folderLayoutCache[folderKey] = {};
-  folderLayoutCache[folderKey][videoPath] = layout;
+  // Merge, mirroring the server: one entry holds BOTH the popup geometry and the bento tile
+  // size, and the grid re-renders from this cache before any reload would refresh it.
+  folderLayoutCache[folderKey][videoPath] =
+    Object.assign(folderLayoutCache[folderKey][videoPath] || {}, layout);
   try {
     await api.post(`/api/folder-layouts/${encodeURIComponent(folderKey)}`, { videoPath, layout });
   } catch (err) { console.error("Save folder layout error:", err); }
