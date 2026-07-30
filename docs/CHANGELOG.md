@@ -1,5 +1,15 @@
 # Changelog
 
+## v2.5.6 - 2026-07-30
+### Fixed
+- **A source folder holding videos directly was invisible**: the app assumed a media root contains *subfolders*, and only surfaced a root's own videos when the source carried a `collection` flag — which just `create_collection()` ever set. So a folder added via **Settings → Add Source** that holds loose videos produced zero sidebar entries and looked like the add had silently failed. "Flat" is now detected from the filesystem at read time (`_source_folder_entries()`), so sources already saved without the flag start working with no re-adding. A root with both loose videos and subfolders now exposes **both**.
+- **Settings always reported `0 folders, 0 videos` for flat sources and collections**: `/api/sources` counted only subdirectories and ignored the `collection` flag entirely, so even a working collection displayed 0/0. Counts are now derived from the same helper that builds the sidebar, so the two can't disagree.
+- **Flat roots are now fully browseable**: `/api/videos/<root name>` resolves to the root (with and without a `?source=` index, so the AI assistant's `list_videos` works too), and `_resolve_folder_path()` falls back to matching a root by name — after subfolder matches, so a real subfolder of the same name still wins.
+- `[LOW]` **Path-resolution hardening**: `_resolve_video_path()` stripped the leading path segment for *any* collection source, so a request like `SomeOtherFolder/clip.mp4` could resolve to a same-named file in an unrelated collection root. The strip now requires the segment to name that root. Covered by a regression test.
+
+### Changed
+- Settings → Add Source row: the path input and **Browse** button are pinned to the same `--h-md` (34px) control-height token with `align-items: stretch`, so their top and bottom edges line up exactly instead of drifting with font metrics. All four controls in that block are now the same height. Hint copy updated to say loose-video folders are supported.
+
 ## v2.5.5 - 2026-07-15
 ### Fixed
 - **Removing a theater clip rebuilt the whole grid**: the remove handler called `renderTheater()`, re-creating every `<video>` so all clips re-fetched their streams (the "reload"). Same class of bug as the old drag-to-swap rebuild, fixed the same way — `removeTheaterClip()` fades the tile out (opacity/transform only, so no reflow), then FLIP-glides the survivors into their new spots. Verified: surviving cells and their `<video>` elements are the **same DOM nodes** afterwards, so nothing reloads. Removing the last clip still renders the empty state; a failed delete resyncs via `loadTheater()`.

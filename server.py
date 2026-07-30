@@ -179,14 +179,15 @@ def _resolve_video_path(relative_path):
         candidate = root / relative_path
         if _is_contained(candidate, root) and candidate.exists() and candidate.is_file():
             return candidate
-        # Collection sources: the first segment of relative_path is the source/folder
-        # name, which already maps to source["path"]. Try stripping it.
-        if source.get("collection"):
-            parts = relative_path.split("/", 1)
-            if len(parts) == 2:
-                candidate = root / parts[1]
-                if _is_contained(candidate, root) and candidate.exists() and candidate.is_file():
-                    return candidate
+        # Flat roots (collections, or any root holding videos directly) address their
+        # clips as "<root name>/<file>", so strip that leading segment — but ONLY when
+        # it actually names this root, else an unrelated folder name could resolve to a
+        # same-named file sitting in the root.
+        parts = relative_path.split("/", 1)
+        if len(parts) == 2 and parts[0] == root.name:
+            candidate = root / parts[1]
+            if _is_contained(candidate, root) and candidate.exists() and candidate.is_file():
+                return candidate
     return None
 
 
@@ -196,7 +197,63 @@ def _resolve_folder_path(folder_name):
         candidate = Path(source["path"]) / folder_name
         if candidate.exists() and candidate.is_dir():
             return candidate, source
+    # Flat roots: the source root itself is the browseable folder. Second pass, so a
+    # real subfolder of the same name always wins.
+    for source in _get_media_roots():
+        root = Path(source["path"])
+        if root.name == folder_name and root.exists() and root.is_dir():
+            return root, source
     return None, None
+
+
+def _source_folder_entries(idx, source, excluded, hidden):
+    """Browseable folder entries for one media source.
+
+    Shared by /api/folders (the sidebar) and /api/sources (the Settings counts) so the
+    two can never disagree. A root holding videos directly is itself browseable; a root
+    of subfolders exposes those; a root doing both exposes both. Being "flat" is read
+    off the filesystem, not off a stored flag, so sources saved without one still work.
+    """
+    root = Path(source["path"])
+    entries = []
+    if not root.exists():
+        return entries
+    try:
+        children = sorted(root.iterdir())
+    except (OSError, PermissionError):
+        return entries
+
+    direct = [f for f in children if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS]
+    if direct:
+        entries.append({
+            "name": source.get("name", root.name),
+            "path": root.name,
+            "count": len(direct),
+            "source": source.get("name", f"Source {idx}"),
+            "sourceIndex": idx,
+            "hidden": f"{idx}:{root.name}" in hidden,
+            "isCollection": True,
+        })
+    if source.get("collection"):
+        return entries  # collections are flat by design — don't descend
+
+    for item in children:
+        if item.is_dir() and item.name not in excluded:
+            try:
+                vids = [f for f in item.iterdir()
+                        if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS]
+            except (OSError, PermissionError):
+                continue
+            if vids:
+                entries.append({
+                    "name": item.name,
+                    "path": item.name,
+                    "count": len(vids),
+                    "source": source.get("name", f"Source {idx}"),
+                    "sourceIndex": idx,
+                    "hidden": f"{idx}:{item.name}" in hidden,
+                })
+    return entries
 
 
 def _sanitize_filename(title, max_length=120):
@@ -333,27 +390,20 @@ def get_sources():
     """Get all configured media source paths."""
     config = _load_config()
     sources = config.get("mediaPaths", [])
+    excluded = _get_excluded()
+    hidden = _get_hidden()
     result = []
     for i, src in enumerate(sources):
         root = Path(src["path"])
-        folder_count = 0
-        video_count = 0
-        if root.exists():
-            excluded = _get_excluded()
-            for item in root.iterdir():
-                if item.is_dir() and item.name not in excluded:
-                    vids = [f for f in item.iterdir()
-                            if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS]
-                    if vids:
-                        folder_count += 1
-                        video_count += len(vids)
+        # Count what the sidebar actually shows — same helper, so they can't drift
+        entries = _source_folder_entries(i, src, excluded, hidden)
         result.append({
             "index": i,
             "name": src.get("name", f"Source {i}"),
             "path": src["path"],
             "exists": root.exists(),
-            "folders": folder_count,
-            "videos": video_count,
+            "folders": len(entries),
+            "videos": sum(e["count"] for e in entries),
         })
     return jsonify({"sources": result})
 
@@ -890,47 +940,8 @@ def get_folders():
     excluded = _get_excluded()
     hidden = _get_hidden()
     tree = []
-
     for idx, source in enumerate(sources):
-        root = Path(source["path"])
-        if not root.exists():
-            continue
-
-        # Collections: show the root itself as a browseable folder (flat, no subfolders)
-        if source.get("collection"):
-            videos = [
-                f for f in root.iterdir()
-                if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
-            ]
-            folder_key = f"{idx}:{root.name}"
-            tree.append({
-                "name": source.get("name", root.name),
-                "path": root.name,
-                "count": len(videos),
-                "source": source.get("name", f"Source {idx}"),
-                "sourceIndex": idx,
-                "hidden": folder_key in hidden,
-                "isCollection": True,
-            })
-            continue
-
-        # Regular sources: list subfolders with videos
-        for item in sorted(root.iterdir()):
-            if item.is_dir() and item.name not in excluded:
-                videos = [
-                    f for f in item.iterdir()
-                    if f.is_file() and f.suffix.lower() in VIDEO_EXTENSIONS
-                ]
-                if videos:
-                    folder_key = f"{idx}:{item.name}"
-                    tree.append({
-                        "name": item.name,
-                        "path": item.name,
-                        "count": len(videos),
-                        "source": source.get("name", f"Source {idx}"),
-                        "sourceIndex": idx,
-                        "hidden": folder_key in hidden,
-                    })
+        tree.extend(_source_folder_entries(idx, source, excluded, hidden))
     return jsonify(tree)
 
 
@@ -958,6 +969,8 @@ def get_videos(folder):
                 candidate = root / folder
                 if candidate.exists() and candidate.is_dir():
                     folder_path = candidate
+                elif root.name == folder and root.exists() and root.is_dir():
+                    folder_path = root  # flat root: the source itself is the folder
         except (IndexError, ValueError):
             pass
 

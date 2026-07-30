@@ -112,6 +112,8 @@ state = {
 - Folders grouped by source in sidebar when multiple sources exist
 - Path resolution: searches all roots in order, first match wins
 - Backward compatible with existing theater/playlist clip paths
+- **Flat vs nested roots (v2.5.6)**: `_source_folder_entries()` is the single builder for both `/api/folders` (sidebar) and `/api/sources` (Settings counts). A root holding videos **directly** becomes its own browseable entry (`path` = root's folder name); a root of subfolders exposes those; a root doing both exposes both. Detected from the filesystem at read time — the `collection` flag is still honored (flat, never descends) but no longer required.
+- Flat-root clip paths are `"<root folder name>/<file>"`; `_resolve_video_path()` strips that leading segment **only when it names the root**.
 
 ### Video Prefetch Cache (app.js)
 - Background-fetches videos into Blob URLs while user browses folders/Theater
@@ -265,3 +267,4 @@ No frontend dependencies. No build step. No npm.
 | 7 | Ship static asset changes without bumping `?v=` | Bump the `?v=` query on css/js links in index.html — browsers heuristic-cache unversioned assets |
 | 8 | Call `renderTheater()` after mutating one tile | Full rebuild re-creates every `<video>` → all clips reload/flicker. Mutate the DOM in place + FLIP-glide (see `swapTheaterClips`/`removeTheaterClip`). Needs `void grid.offsetHeight` between Invert and Play or transforms strand |
 | 9 | `return jsonify(data)` from a route returning theater clips | Use `_theater_json(data)` — theater.json holds the name from when the clip was added, so any raw response reverts in-app labels. Same for adopting a mutation response into `state.theaterClips`: splice locally instead |
+| 10 | Compute a count separately from the list it describes | Settings showed `0 folders, 0 videos` for perfectly valid sources because `/api/sources` re-implemented the sidebar's folder scan. Derive both from one helper (`_source_folder_entries()`) so they can't drift |

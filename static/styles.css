@@ -1974,7 +1974,8 @@ html, body {
 
 .settings-add-source input {
   width: 100%;
-  padding: 8px 12px;
+  height: var(--h-md);   /* same token as .cyber-btn so the Browse row lines up exactly */
+  padding: 0 12px;       /* height governs the vertical box; padding stays horizontal */
   background: var(--bg-tertiary);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1997,11 +1998,12 @@ html, body {
 .source-path-row {
   display: flex;
   gap: 8px;
-  align-items: center;
+  align-items: stretch;  /* equal top/bottom edges even if a font metric changes */
 }
 
 .source-path-row input {
   flex: 1;
+  min-width: 0;          /* shrink instead of overflowing the row */
   cursor: pointer;
 }
 
