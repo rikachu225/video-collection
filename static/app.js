@@ -1132,6 +1132,29 @@ async function loadTheater() {
 let theaterDrag = null;          // { path, name, startX, startY, moved, cell, chip }
 let theaterSuppressClick = false;
 
+// Bento tile resize — aspect-locked, so only the column span is dragged.
+let bentoResize = null;
+
+function startBentoResize(e, card, view, onCommit) {
+  e.preventDefault();
+  e.stopPropagation();          // keep drag-to-swap and card click out of it
+  const grid = card.parentElement;
+  if (!grid) return;
+  const { tracks, gap } = gridTracks(grid);
+  const startCols = parseInt(String(card.style.gridColumnEnd).replace("span ", ""), 10)
+    || BENTO_DEFAULT_COLS[view];
+  bentoResize = {
+    card, grid, view, onCommit,
+    startX: e.clientX,
+    startCols,
+    cols: startCols,
+    track: tracks[0] || 120,
+    gap,
+    trackCount: tracks.length,
+  };
+  document.body.classList.add("bento-resizing");
+}
+
 // Swap two sibling nodes in place (no rebuild) via a temporary marker.
 function _swapDomNodes(a, b) {
   const marker = document.createComment("swap");
@@ -1466,6 +1489,31 @@ function renderTheater() {
         bentoSpan(cell);
       }
     }, { once: true });
+
+    // Corner resize handle — aspect-locked width drag
+    const resizeHandle = document.createElement("div");
+    resizeHandle.className = "bento-resize-handle";
+    resizeHandle.title = "Drag to resize";
+    resizeHandle.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v6h-6"/><path d="M21 21l-7-7"/></svg>`;
+    resizeHandle.addEventListener("mousedown", (e) => {
+      startBentoResize(e, cell, "theater", async (cols) => {
+        clip.bentoCols = cols;
+        const tc = state.theaterClips.find((c) => c.path === clip.path);
+        if (tc) tc.bentoCols = cols;
+        try {
+          await api.post("/api/theater/size", { path: clip.path, cols });
+          if (state.loadedPlaylistName) {
+            await api.post("/api/playlists", {
+              name: state.loadedPlaylistName, clips: state.theaterClips,
+            });
+          }
+        } catch (err) {
+          console.error("Save tile size error:", err);
+          toast("Couldn't save tile size", "error");
+        }
+      });
+    });
+    cell.appendChild(resizeHandle);
 
     dom.theaterGrid.appendChild(cell);
     // Column span first (it determines the width the row span is derived from).
@@ -2146,6 +2194,21 @@ document.addEventListener("mousemove", (e) => {
     const pct = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
     if (video.duration) video.currentTime = pct * video.duration;
   }
+  if (bentoResize) {
+    const b = bentoResize;
+    const [min, max] = BENTO_COL_RANGE[b.view];
+    const startW = b.startCols * b.track + (b.startCols - 1) * b.gap;
+    const targetW = startW + (e.clientX - b.startX);
+    const ceiling = Math.min(max, b.trackCount || max);
+    let cols = Math.round((targetW + b.gap) / (b.track + b.gap));
+    cols = Math.max(min, Math.min(ceiling, cols));
+    if (cols !== b.cols) {
+      b.cols = cols;
+      b.card.style.gridColumnEnd = `span ${cols}`;
+      // Pass the width we just chose — no forced reflow needed mid-drag
+      bentoSpan(b.card, cols * b.track + (cols - 1) * b.gap);
+    }
+  }
   if (dragState) {
     const { panel, startX, startY } = dragState;
     const canvas = dom.workspaceCanvas;
@@ -2195,6 +2258,12 @@ document.addEventListener("mousemove", (e) => {
 });
 
 document.addEventListener("mouseup", () => {
+  if (bentoResize) {
+    const b = bentoResize;
+    bentoResize = null;
+    document.body.classList.remove("bento-resizing");
+    if (b.cols !== b.startCols) b.onCommit(b.cols);
+  }
   dragState = null;
   resizeState = null;
   scrubState = null;
