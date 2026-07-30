@@ -658,7 +658,7 @@ function renderVideoGrid(videos) {
 
     // Click thumbnail to play
     card.querySelector(".video-thumb").addEventListener("click", (e) => {
-      if (e.target.closest(".add-theater-btn") || e.target.closest(".delete-video-btn") || e.target.closest(".rename-video-btn")) return;
+      if (e.target.closest(".add-theater-btn") || e.target.closest(".delete-video-btn") || e.target.closest(".rename-video-btn") || e.target.closest(".bento-resize-handle")) return;
       playVideo(video);
     });
 
@@ -711,6 +711,29 @@ function renderVideoGrid(videos) {
         },
       });
     });
+
+    // Corner resize handle — same aspect-locked drag as the theater
+    const cardResize = document.createElement("div");
+    cardResize.className = "bento-resize-handle";
+    cardResize.title = "Drag to resize";
+    cardResize.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v6h-6"/><path d="M21 21l-7-7"/></svg>`;
+    cardResize.addEventListener("mousedown", (e) => {
+      startBentoResize(e, card, "browse", async (cols) => {
+        if (!state.currentFolderLayouts[video.path]) state.currentFolderLayouts[video.path] = {};
+        state.currentFolderLayouts[video.path].tileCols = cols;
+        try {
+          await saveFolderLayout(state.currentFolderKey, video.path, { tileCols: cols });
+        } catch (err) {
+          console.error("Save tile size error:", err);
+          toast("Couldn't save tile size", "error");
+        }
+      });
+    });
+    // Nest inside .video-thumb, NOT the card. bentoSpan's chromeH loop sums offsetHeight for
+    // every direct child of the card except the first (the media box), and an absolutely
+    // positioned element still reports its height — appending to the card would inflate every
+    // tile's row span by ~20px. .video-thumb is the media box and is already position:relative.
+    card.querySelector(".video-thumb").appendChild(cardResize);
 
     dom.videoGrid.appendChild(card);
     const cardCols = applyBentoCols(
