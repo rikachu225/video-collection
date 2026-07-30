@@ -61,6 +61,9 @@ CACHE_DIR.mkdir(exist_ok=True)
 
 VIDEO_EXTENSIONS = {".mp4", ".mkv", ".avi", ".mov", ".webm", ".wmv", ".flv", ".m4v"}
 
+# Bento tile column spans (theater grid is 12 columns; height follows clip aspect)
+THEATER_MIN_COLS, THEATER_MAX_COLS = 2, 12
+
 # Remux cache: stores browser-compatible copies of videos with incompatible codecs
 REMUX_DIR = DATA_DIR / "remux_cache"
 REMUX_DIR.mkdir(exist_ok=True)
@@ -1296,6 +1299,30 @@ def update_loop():
             break
     _save_json(THEATER_FILE, data)
     return _theater_json(data)
+
+
+@app.route("/api/theater/size", methods=["POST"])
+def update_theater_size():
+    """Set a theater clip's bento column span.
+
+    Only the width is stored — the tile's height is always derived from the clip's
+    aspect ratio on the client, which is what keeps the grid perfectly aligned.
+    """
+    body = request.json or {}
+    path = body.get("path")
+    cols = body.get("cols")
+    # bool is a subclass of int — reject it explicitly
+    if isinstance(cols, bool) or not isinstance(cols, int):
+        return jsonify({"error": "cols must be an integer"}), 400
+    cols = max(THEATER_MIN_COLS, min(THEATER_MAX_COLS, cols))
+
+    data = _load_json(THEATER_FILE, {"clips": []})
+    for clip in data["clips"]:
+        if clip["path"] == path:
+            clip["bentoCols"] = cols
+            _save_json(THEATER_FILE, data)
+            return _theater_json(data)
+    return jsonify({"error": "Clip not in theater"}), 404
 
 
 # ── API: Folder Layouts (per-folder video popup positions) ────
