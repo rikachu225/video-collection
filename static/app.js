@@ -99,6 +99,8 @@ const state = {
   playlists: [],
   currentView: "browse",
   currentSourceIndex: null,
+  currentFolderKey: null,        // "<sourceIndex>:<folder>" for layout persistence
+  currentFolderLayouts: {},      // videoPath -> { left, top, width, height, tileCols }
   searchQuery: "",
   theaterPlaying: false,
   workspaceOpen: false,
@@ -468,10 +470,14 @@ async function openFolder(folderPath, sourceIndex) {
   $("#view-player").classList.remove("active");
   $("#view-browse").classList.add("active");
 
+  // Tile sizes live per-folder alongside popup geometry — load before rendering
+  const folderKey = sourceIndex != null ? `${sourceIndex}:${folderPath}` : folderPath;
+  state.currentFolderKey = folderKey;
+  state.currentFolderLayouts = await getFolderLayouts(folderKey);
+
   renderVideoGrid(state.currentVideos);
 
   // Background-prefetch folder videos for instant workspace loading
-  const folderKey = sourceIndex != null ? `${sourceIndex}:${folderPath}` : folderPath;
   const folderPaths = state.currentVideos.map((v) => v.path);
   if (folderPaths.length > 0) prefetchCache.warm(folderPaths, folderKey);
 
@@ -520,7 +526,56 @@ const BENTO_ROW = 8; // px — must match grid-auto-rows in .video-grid.bento / 
 // 0.4 covers even extra-tall phone formats (9:19.5 ≈ 0.46); 2.6 covers ultrawide.
 const clampAspect = (w, h) => Math.min(Math.max(w / h, 0.4), 2.6);
 
-function bentoSpan(card) {
+// Bento tile widths are whole column spans; height always follows the clip aspect.
+// Theater: fixed 12-track grid, fine-grained spans. Browse: the grid's own track IS one card,
+// so a card spans whole cards (1 = today's size, up to 3 wide).
+const BENTO_DEFAULT_COLS = { theater: 6, browse: 1 };
+const BENTO_COL_RANGE = { theater: [2, 12], browse: [1, 3] };
+
+// The theater used to set grid-template-columns inline to 1/2/3/4 tracks by clip count.
+// That made column WIDTH depend on clip count, so any change rescaled every tile. The grid
+// is now a fixed 12 tracks and that density heuristic survives as the DEFAULT SPAN — 12 is
+// divisible by 1/2/3/4, so these spans render identically to the old column counts.
+// A clip with a stored bentoCols ignores this and keeps the user's chosen size.
+function theaterDefaultCols(count) {
+  if (count <= 1) return 12;   // was 1 column
+  if (count <= 4) return 6;    // was 2 columns
+  if (count <= 9) return 4;    // was 3 columns
+  return 3;                    // was 4 columns
+}
+
+// Resolved pixel track widths + column gap. Parsing the computed value (rather than
+// dividing container width by a column count) is what makes auto-fill grids work.
+function gridTracks(grid) {
+  const cs = getComputedStyle(grid);
+  const tracks = cs.gridTemplateColumns.split(" ").map(parseFloat).filter((n) => !isNaN(n));
+  return { tracks, gap: parseFloat(cs.columnGap) || 16 };
+}
+
+// Pixel width of a tile spanning `cols` tracks (gaps between them included).
+function bentoTileWidth(grid, cols) {
+  const { tracks, gap } = gridTracks(grid);
+  const n = Math.max(1, Math.min(cols, tracks.length));
+  let w = 0;
+  for (let i = 0; i < n; i++) w += tracks[i] || 0;
+  return w + (n - 1) * gap;
+}
+
+// Apply a stored column span, clamped to the view's range AND to the columns that
+// actually exist (a narrow viewport can't fit a 6-wide tile). The user's stored
+// choice is never modified — only what we render.
+function applyBentoCols(card, cols, view, fallback) {
+  const [min, max] = BENTO_COL_RANGE[view];
+  const grid = card.parentElement;
+  const trackCount = grid ? gridTracks(grid).tracks.length : max;
+  const dflt = fallback || BENTO_DEFAULT_COLS[view];
+  const wanted = Math.max(min, Math.min(max, cols || dflt));
+  const applied = Math.max(1, Math.min(wanted, trackCount || max));
+  card.style.gridColumnEnd = `span ${applied}`;
+  return applied;
+}
+
+function bentoSpan(card, knownWidth) {
   const grid = card.parentElement;
   if (!grid) return;
   const gap = parseFloat(getComputedStyle(grid).rowGap) || 16;
@@ -529,7 +584,11 @@ function bentoSpan(card) {
   // math — aspect box = clientWidth / ar (the card's own box is always laid out).
   const media = card.firstElementChild; // .video-thumb / .theater-video-wrap
   const ar = parseFloat(media?.style.aspectRatio) || 16 / 9;
-  const mediaH = (card.clientWidth || 240) / ar;
+  // During a resize drag the column span changes every frame, so clientWidth would be
+  // stale unless we forced a reflow per mousemove. Callers that already know the tile
+  // width (computed from the grid tracks) pass it in instead.
+  const width = knownWidth != null ? knownWidth : (card.clientWidth || 240);
+  const mediaH = width / ar;
   // Chrome below the media (info bar / loop controls): 0 while skipped → typical
   // fallback, self-corrected by the contentvisibilityautostatechange re-span.
   let chromeH = 2; // borders
@@ -544,7 +603,7 @@ let bentoResizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(bentoResizeTimer);
   bentoResizeTimer = setTimeout(() => {
-    $$(".video-grid.bento .video-card, .theater-grid .theater-cell").forEach(bentoSpan);
+    $$(".video-grid.bento .video-card, .theater-grid .theater-cell").forEach((el) => bentoSpan(el));
   }, 150);
 });
 
@@ -654,7 +713,9 @@ function renderVideoGrid(videos) {
     });
 
     dom.videoGrid.appendChild(card);
-    bentoSpan(card); // provisional 16:9 span; corrected when the thumbnail loads
+    const cardCols = applyBentoCols(
+      card, (state.currentFolderLayouts || {})[video.path]?.tileCols, "browse");
+    bentoSpan(card, bentoTileWidth(dom.videoGrid, cardCols)); // corrected when the thumbnail loads
     // Re-span the moment content-visibility renders the card for real (on scroll)
     card.addEventListener("contentvisibilityautostatechange", () => bentoSpan(card));
   });
@@ -1232,14 +1293,9 @@ function renderTheater() {
 
   if (!hasClips) return;
 
-  // Dynamic grid sizing
-  const count = state.theaterClips.length;
-  let cols;
-  if (count <= 1) cols = 1;
-  else if (count <= 4) cols = 2;
-  else if (count <= 9) cols = 3;
-  else cols = 4;
-  dom.theaterGrid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+  // Density now expresses itself as a DEFAULT SPAN over the fixed 12-column grid, so column
+  // width no longer depends on clip count and resizing one tile never resizes another.
+  const defaultCols = theaterDefaultCols(state.theaterClips.length);
 
   state.theaterClips.forEach((clip) => {
     const cell = document.createElement("div");
@@ -1412,7 +1468,10 @@ function renderTheater() {
     }, { once: true });
 
     dom.theaterGrid.appendChild(cell);
-    bentoSpan(cell); // provisional 16:9 span; corrected when metadata loads
+    // Column span first (it determines the width the row span is derived from).
+    // A stored bentoCols wins; otherwise fall back to the count-based default.
+    const cellCols = applyBentoCols(cell, clip.bentoCols, "theater", defaultCols);
+    bentoSpan(cell, bentoTileWidth(dom.theaterGrid, cellCols)); // corrected when metadata loads
     cell.addEventListener("contentvisibilityautostatechange", () => bentoSpan(cell));
   });
 

@@ -845,7 +845,9 @@ html, body {
 .theater-grid {
   display: grid;
   gap: var(--space-4);
-  grid-template-columns: repeat(2, 1fr);
+  /* 12-column base: tiles span 6 by default (identical width to the old 2-column
+     layout at every viewport) and can be resized in whole-column steps. */
+  grid-template-columns: repeat(12, 1fr);
   /* Bento: cells adopt each clip's aspect (wrap aspect-ratio set from metadata)
      and span 8px rows via JS (bentoSpan); dense packing fills the gaps */
   grid-auto-rows: 8px;
