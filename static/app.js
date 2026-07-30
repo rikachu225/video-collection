@@ -1510,10 +1510,17 @@ function renderTheater() {
         } catch (err) {
           console.error("Save tile size error:", err);
           toast("Couldn't save tile size", "error");
+          loadTheater();                                      // resync from the server
         }
       });
     });
-    cell.appendChild(resizeHandle);
+    // Mounted INSIDE the media wrap, not on the cell: bentoSpan sums offsetHeight over
+    // the cell's direct children (skipping only the first, the media box) to reserve
+    // chrome height — and an absolutely-positioned element still reports offsetHeight,
+    // so a handle parented to the cell would add its 20px to EVERY tile's row span.
+    // The wrap is that skipped first child and is already position:relative, so the
+    // handle's right/bottom anchoring is unchanged.
+    wrap.appendChild(resizeHandle);
 
     dom.theaterGrid.appendChild(cell);
     // Column span first (it determines the width the row span is derived from).
@@ -2196,6 +2203,20 @@ document.addEventListener("mousemove", (e) => {
   }
   if (bentoResize) {
     const b = bentoResize;
+    // Released outside the window: no mouseup ever reached us, so without this the drag
+    // stays armed — the cursor keeps resizing the tile and the next unrelated click
+    // commits whatever span it drifted to. CANCEL rather than commit: we never observed
+    // the release, so the last span is not a size the user chose. Snap back to the span
+    // that is actually persisted so the DOM can't disagree with the server.
+    if (!(e.buttons & 1)) {
+      if (b.cols !== b.startCols) {
+        b.card.style.gridColumnEnd = `span ${b.startCols}`;
+        bentoSpan(b.card, b.startCols * b.track + (b.startCols - 1) * b.gap);
+      }
+      bentoResize = null;
+      document.body.classList.remove("bento-resizing");
+      return;
+    }
     const [min, max] = BENTO_COL_RANGE[b.view];
     const startW = b.startCols * b.track + (b.startCols - 1) * b.gap;
     const targetW = startW + (e.clientX - b.startX);
@@ -2262,6 +2283,16 @@ document.addEventListener("mouseup", () => {
     const b = bentoResize;
     bentoResize = null;
     document.body.classList.remove("bento-resizing");
+    // The handle sits inside the media wrap (so bentoSpan ignores it), which puts it
+    // under that wrap's click-to-open-popup listener. A click always follows mouseup,
+    // fired at the nearest common ancestor of the two targets — the wrap itself for any
+    // drag starting and ending inside the tile — so a resize would also open the popup.
+    // stopPropagation on the mousedown can't prevent that; swallow the one click that
+    // follows instead. mouseup and click dispatch in the same task, so the timeout
+    // always removes this listener after that click and never eats a later one.
+    const swallowClick = (ev) => ev.stopPropagation();
+    document.addEventListener("click", swallowClick, true);
+    setTimeout(() => document.removeEventListener("click", swallowClick, true), 0);
     if (b.cols !== b.startCols) b.onCommit(b.cols);
   }
   dragState = null;
