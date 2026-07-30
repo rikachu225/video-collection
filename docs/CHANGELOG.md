@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.6.0 - 2026-07-30
+### Added
+- **Resize tiles by dragging**: grab the `◢` handle in the corner of a theater tile or a browse card and drag to change its width. Resizing is **aspect-locked** — you set the width in whole grid columns and the height follows the clip's true aspect ratio, so tiles stay perfectly aligned and never letterbox or crop. **Enlarging one tile never resizes another**: column tracks are fixed, so the others keep their exact size (they only re-flow position as the grid re-packs). Theater tiles span 2–12 columns; browse cards resize in whole-card steps (1–3 cards wide). Sizes persist per view — theater sizes save to `theater.json` and travel with playlists, like loops and clip order; browse sizes save per folder in `folder_layouts.json`. Desktop only.
+- `POST /api/theater/size {path, cols}` — set a theater clip's column span (clamped 2–12; returns through `_theater_json()` so in-app rename labels stay applied).
+
+### Changed
+- The theater grid is now a fixed 12 columns, and its old inline per-clip-count column override is gone. That override made column *width* depend on how many clips you had, which meant changing anything rescaled everything — incompatible with independent resizing. The count-based density survives as the **default span** (12/6/4/3 for 1 / ≤4 / ≤9 / 10+ clips), which is pixel-identical to the old 1/2/3/4-column layout because 12 divides evenly by all of them. Adding or removing clips still re-tightens tiles you haven't resized; a tile you have resized keeps your size.
+- The browse grid definition is deliberately **unchanged** — a card's default span of 1 is exactly today's card, so the layout is a no-op by construction at every breakpoint.
+
+### Fixed
+- Folder layout saves now **merge** instead of replacing, on both the server (`POST /api/folder-layouts/<key>`) and in the client-side cache the grid renders from. Previously a clip's popup window geometry and its tile size destroyed each other in whichever order they were written.
+
 ## v2.5.6 - 2026-07-30
 ### Fixed
 - **A source folder holding videos directly was invisible**: the app assumed a media root contains *subfolders*, and only surfaced a root's own videos when the source carried a `collection` flag — which just `create_collection()` ever set. So a folder added via **Settings → Add Source** that holds loose videos produced zero sidebar entries and looked like the add had silently failed. "Flat" is now detected from the filesystem at read time (`_source_folder_entries()`), so sources already saved without the flag start working with no re-adding. A root with both loose videos and subfolders now exposes **both**.

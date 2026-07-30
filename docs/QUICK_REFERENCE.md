@@ -70,6 +70,7 @@ API Routes:
   POST /api/theater/layout               ← Save workspace panel positions
   POST /api/theater/reorder              ← Reorder clips to given path order (drag-swap)
   POST /api/theater/loop                 ← Set loop start/end on clip
+  POST /api/theater/size                 ← Set a clip's bento column span {path, cols} (2-12; height follows aspect)
   GET  /api/playlists                    ← All saved playlists
   POST /api/playlists                    ← Save/update playlist (upsert by name)
   DEL  /api/playlists/<name>             ← Delete playlist
@@ -190,6 +191,15 @@ python server.py 8080        # Start on custom port
 - Auto-dismiss after 2.5s with fade animation
 - Types: info, success, error (color-coded left border)
 
+### Bento Tile Sizing (v2.6.0)
+- Tile width = whole grid column spans; height is ALWAYS derived from the clip aspect (`bentoSpan`), which is what guarantees alignment. Only the integer span is stored.
+- **Theater** = fixed `repeat(12, 1fr)`. Default span comes from `theaterDefaultCols(count)` → 12/6/4/3, which renders identically to the old 1/2/3/4-column layout. **NEVER reintroduce an inline `grid-template-columns` on the theater grid** — it makes track width depend on clip count, so resizing one tile rescales every other tile.
+- **Browse grid is deliberately UNTOUCHED**; a card spans 1–3 whole cards (default 1 = today's card). Do NOT halve the track to get finer steps: `auto-fill` can yield an ODD track count, which narrows every card while tiles-per-row stays the same — the metric that matters is tile WIDTH, not tiles per row.
+- `bentoSpan(card, knownWidth)` — pass `knownWidth` during a resize drag; otherwise it measures `clientWidth`, which would be stale mid-drag without a forced reflow per frame.
+- **The resize handle must be nested inside the media box** (`.theater-video-wrap` / `.video-thumb`), never a direct child of the tile: `bentoSpan`'s chrome loop sums `offsetHeight` over non-media children, and an absolutely-positioned element still reports its height, so a card-level handle silently inflates every tile's row span.
+- Stored spans are clamped to the available track count at render time (narrow viewports) WITHOUT changing the user's stored choice.
+- Persistence: `bentoCols` on theater clips (travels with playlists), `tileCols` in `folder_layouts.json` per folder. Layout writes MERGE on both server and client — one entry holds both popup geometry and tile size.
+
 ## z-index Layer Map
 ```
 Topbar (sticky):      20
@@ -212,6 +222,7 @@ Toast container:    9999
 - `data/theater.json` - current theater state (clips, loops, layouts)
 - `data/playlists.json` - saved playlists
 - `data/clip_names.json` - in-app display labels keyed by clip path (disk files never renamed; applied to /api/videos, /api/playlists, and ALL theater responses via `_theater_json()`)
+- `data/folder_layouts.json` - per-folder, per-clip popup geometry AND bento tile sizes (`tileCols`); saves MERGE, never overwrite
 - `data/thumbnails/` - generated poster frames
 
 ## Portability & Cross-Platform Transfer
