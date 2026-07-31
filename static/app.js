@@ -1954,6 +1954,7 @@ function buildWorkspacePanels() {
       // Skip if clicking interactive elements inside panel
       if (e.target.closest(".ws-btn, .ws-panel-resize-handle, .ws-scrubber-bar, video")) return;
       e.preventDefault();
+      clearTimeout(wsRelayoutTimer);   // manual arrangement wins over a pending auto re-layout
 
       dragState = {
         panel,
@@ -1968,6 +1969,7 @@ function buildWorkspacePanels() {
         e.preventDefault();
         e.stopPropagation();
         panel.style.zIndex = String(++topZ); // grabbing a corner also brings the panel forward
+        clearTimeout(wsRelayoutTimer);   // manual arrangement wins over a pending auto re-layout
 
         resizeState = {
           panel,
@@ -2068,6 +2070,10 @@ function buildWorkspacePanels() {
   });
 }
 
+// Pending re-layout after late video metadata arrives (see autoTileLayout). Cancelled the
+// moment the user drags or resizes a panel, so it can never overwrite a manual arrangement.
+let wsRelayoutTimer = null;
+
 function autoTileLayout() {
   // Array, not the raw NodeList — the layout below uses .map, which NodeList doesn't have
   const panels = [...$$(".ws-panel")];
@@ -2085,9 +2091,25 @@ function autoTileLayout() {
   // both sides. Here every panel keeps its true aspect and each row is scaled so the row spans
   // the full canvas width — panels sit edge to edge with no wasted space. Panels stay
   // absolutely positioned, so they are still freely draggable, resizable and overlappable.
+  // Uncached panels render with preload="none", so their metadata (and therefore their true
+  // aspect) may not have arrived yet — those would silently fall back to 16:9 and a portrait
+  // clip would get laid out landscape with black bars. Track them, nudge the metadata to load,
+  // and re-run the layout once it does.
+  const pending = [];
   const aspects = panels.map((p) => {
     const v = p.querySelector(".ws-video");
-    return (v && v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9;
+    if (v && v.videoWidth && v.videoHeight) return v.videoWidth / v.videoHeight;
+    if (v) pending.push(v);
+    return 16 / 9;
+  });
+  pending.forEach((v) => {
+    if (v.preload === "none") v.preload = "metadata";
+    v.addEventListener("loadedmetadata", () => {
+      clearTimeout(wsRelayoutTimer);
+      wsRelayoutTimer = setTimeout(() => {
+        if (state.workspaceOpen) autoTileLayout();
+      }, 200);
+    }, { once: true });
   });
 
   // Rows are built by TARGET HEIGHT, not by clip count: keep adding clips to a row until

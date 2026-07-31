@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.7.1 - 2026-07-31
+### Added
+- **The assistant panel is draggable, not just the orb.** Grab it anywhere on its chrome — header, notice strip, padding — and it moves; the position persists per browser. The resize grip, the input, the buttons and the message list are excluded, so typing, sending and selecting text still work. A dragged panel stays where you put it instead of re-anchoring to the orb; double-clicking the orb clears both positions and restores the default corner.
+- **Layout requests understand which surface you're looking at.** Asking for a bento while the workspace is open now re-arranges the *workspace panels* (new `bento_workspace` tool) instead of silently restyling the theater grid you can't see. `workspaceOpen` rides in the assistant context so the model can tell the two apart. Verified live: same sentence routes to `bento_workspace` with the workspace open and `set_tile_size` with it closed.
+
+### Fixed
+- **Workspace bento laid some portrait clips out as 16:9 with black bars.** Panels for un-prefetched clips render with `preload="none"`, so `videoWidth`/`videoHeight` are still 0 when the layout runs and the code fell back to 16:9 — which is why prefetched clips looked right and the rest didn't. Those panels are now nudged to `preload="metadata"` and the layout re-runs once their real dimensions arrive (debounced). Verified live: late panels corrected themselves from 1.78 to 0.56 automatically. Any manual drag or resize cancels the pending re-layout, so it can never overwrite an arrangement you made yourself.
+
 ## v2.7.0 - 2026-07-31
 ### Added
 - **The assistant can design bento layouts.** New `set_tile_size` tool takes a *list*, so a whole look is composed in one call — e.g. "organize this into a Pinterest-style bento with clip 1 as the hero" produces one hero tile, a couple of double-wide tiles for rhythm, and the rest normal. Sizes are relative (`small` = normal, `medium` = 2x, `large`/`hero` = 3x, `full` = whole row) and always resolve to the whole-tile multiples the grid needs (v2.6.1), so an AI-composed layout can't strand dead space.

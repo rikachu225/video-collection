@@ -36,7 +36,23 @@ def _saved(tmp_path):
 
 # ── Registry ──
 def test_new_tools_are_registered():
-    assert {"create_folder", "set_tile_size"}.issubset(set(TOOL_NAMES))
+    assert {"create_folder", "set_tile_size", "bento_workspace"}.issubset(set(TOOL_NAMES))
+
+
+def test_bento_workspace_is_a_ui_command():
+    # Runs in the browser (it re-arranges live DOM panels), not server-side
+    assert "bento_workspace" in ai_agent.UI_COMMAND_TOOLS
+    sink = Sink()
+    r = execute_tool("bento_workspace", {}, {"workspaceOpen": True}, sink)
+    assert {"command": "bento_workspace", "args": {}} in sink.ui_commands
+    assert r["status"] == "queued"
+
+
+def test_prompt_distinguishes_workspace_from_theater_layout():
+    from ai_agent import build_system_prompt
+    prompt = build_system_prompt({"workspaceOpen": True, "theaterClips": [], "currentVideos": []})
+    assert "workspaceOpen" in prompt          # the model can see which surface is in front
+    assert "bento_workspace" in prompt
 
 
 def test_default_model_is_the_agentic_flash():

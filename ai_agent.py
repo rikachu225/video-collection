@@ -197,6 +197,11 @@ _TOOL_DEFS = {
     "unmute_all": ("Unmute all videos.", {"type": "object", "properties": {}}),
     "open_workspace": ("Open fullscreen workspace mode.", {"type": "object", "properties": {}}),
     "close_workspace": ("Close workspace mode.", {"type": "object", "properties": {}}),
+    "bento_workspace": ("Re-arrange the OPEN workspace's floating panels into a bento layout "
+                        "(justified rows, each panel keeping its aspect). Use this when the "
+                        "workspace is open and the user asks to arrange/tidy/bento what they "
+                        "see — set_tile_size only affects the theater grid, not the workspace.",
+                        {"type": "object", "properties": {}}),
     "switch_view": ("Switch the main view.", {
         "type": "object",
         "properties": {"view": {"type": "string", "enum": ["browse", "theater", "playlists"]}},
@@ -210,6 +215,7 @@ TOOL_NAMES = list(_TOOL_DEFS.keys())
 UI_COMMAND_TOOLS = {
     "play_all", "pause_all", "mute_all", "unmute_all",
     "open_workspace", "close_workspace", "switch_view", "open_folder",
+    "bento_workspace",
 }
 
 
@@ -237,6 +243,11 @@ def build_system_prompt(ctx):
         "ask a brief clarifying question instead of guessing. "
         "'all of these', 'all of them', 'everything here' means every video in the current folder — "
         "pass 'all' to add_to_theater. "
+        "TWO DIFFERENT LAYOUTS EXIST. If workspaceOpen is true the user is looking at the "
+        "workspace's floating panels — 'arrange these', 'tidy this up', 'make this a bento' then "
+        "means bento_workspace. set_tile_size only changes the theater grid, which they are NOT "
+        "looking at while the workspace is open. If the workspace is closed, layout requests mean "
+        "set_tile_size. "
         "You can design theater layouts: set_tile_size takes a LIST, so compose the whole look in "
         "ONE call rather than one call per clip. Sizes are relative to the grid's normal tile — "
         "small = normal, medium = 2x wide, large/hero = 3x, full = the entire row. For a "
@@ -254,6 +265,7 @@ def build_system_prompt(ctx):
         "Keep replies short and friendly. After acting, confirm what you did in one sentence.\n\n"
         "CONTEXT (current app state):\n" + _json.dumps({
             "theaterName": theater_name,
+            "workspaceOpen": bool(ctx.get("workspaceOpen")),
             "currentView": ctx.get("currentView"),
             "currentFolder": ctx.get("currentFolder"),
             "theaterClips": ctx.get("theaterClips", []),

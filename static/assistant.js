@@ -42,6 +42,7 @@
     }
     return {
       theaterName: state.theaterName,   // user's own word for the theater (e.g. "My Cinema")
+      workspaceOpen: !!state.workspaceOpen,  // "arrange these" means the workspace when it's open
       currentView: state.currentView,
       currentFolder: state.currentFolder,
       currentSourceIndex: state.currentSourceIndex,
@@ -81,6 +82,7 @@
       }
     },
     close_workspace: () => closeWorkspace(),
+    bento_workspace: () => { if (typeof autoTileLayout === "function") autoTileLayout(); },
     set_loaded_playlist: (a) => { state.loadedPlaylistName = a.name || null; },
     switch_view: (a) => switchView(a.view || "browse"),
     open_folder: (a) => {
@@ -161,9 +163,18 @@
 
   function positionPanel() {
     if (panel.classList.contains("hidden")) return;
-    const o = orb.getBoundingClientRect();
     const p = panel.getBoundingClientRect();
     const vw = window.innerWidth, vh = window.innerHeight;
+    // Dragged somewhere deliberately? Stay put (clamped on-screen) instead of re-anchoring to
+    // the orb. Double-clicking the orb clears this and restores the anchored behaviour.
+    const pinned = store.get("aiPanelPos");
+    if (pinned) {
+      panel.style.left = clampNum(pinned.x, ORB_MARGIN, Math.max(ORB_MARGIN, vw - p.width - ORB_MARGIN)) + "px";
+      panel.style.top = clampNum(pinned.y, ORB_MARGIN, Math.max(ORB_MARGIN, vh - p.height - ORB_MARGIN)) + "px";
+      panel.style.right = "auto"; panel.style.bottom = "auto";
+      return;
+    }
+    const o = orb.getBoundingClientRect();
     // Open above the orb when it sits in the lower half of the screen, else below;
     // right-align to the orb on the right half, else left-align. Then clamp on-screen.
     let top = (o.top + o.height / 2 > vh / 2) ? o.top - p.height - ORB_MARGIN : o.bottom + ORB_MARGIN;
@@ -189,7 +200,35 @@
     panelResize = { startW: p.width, startH: p.height, startX: e.clientX, startY: e.clientY, right: p.right, bottom: p.bottom };
   });
 
+  // Drag the panel itself, not just the orb. Grab it anywhere on its chrome — header, notice
+  // strip, padding. The resize grip, the input, buttons and the message list are excluded so
+  // typing, sending and selecting text all still work.
+  let panelDrag = null;
+  panel.addEventListener("mousedown", (e) => {
+    if (e.button !== 0) return;
+    if (e.target.closest(".ai-resize-handle, input, textarea, button, .ai-messages")) return;
+    const p = panel.getBoundingClientRect();
+    panelDrag = {
+      offX: e.clientX - p.left, offY: e.clientY - p.top,
+      startX: e.clientX, startY: e.clientY, moved: false,
+    };
+  });
+
   document.addEventListener("mousemove", (e) => {
+    if (panelDrag) {
+      const far = Math.hypot(e.clientX - panelDrag.startX, e.clientY - panelDrag.startY) >= DRAG_THRESHOLD;
+      if (panelDrag.moved || far) {
+        if (!panelDrag.moved) { panelDrag.moved = true; panel.classList.add("dragging"); }
+        e.preventDefault();
+        const p = panel.getBoundingClientRect();
+        const vw = window.innerWidth, vh = window.innerHeight;
+        panel.style.left = clampNum(e.clientX - panelDrag.offX, ORB_MARGIN,
+                                    Math.max(ORB_MARGIN, vw - p.width - ORB_MARGIN)) + "px";
+        panel.style.top = clampNum(e.clientY - panelDrag.offY, ORB_MARGIN,
+                                   Math.max(ORB_MARGIN, vh - p.height - ORB_MARGIN)) + "px";
+        panel.style.right = "auto"; panel.style.bottom = "auto";
+      }
+    }
     if (orbDrag) {
       if (!orbDrag.moved && Math.hypot(e.clientX - orbDrag.startX, e.clientY - orbDrag.startY) < DRAG_THRESHOLD) return;
       if (!orbDrag.moved) { orbDrag.moved = true; orb.classList.add("dragging"); }
@@ -211,6 +250,14 @@
   });
 
   document.addEventListener("mouseup", () => {
+    if (panelDrag) {
+      if (panelDrag.moved) {
+        panel.classList.remove("dragging");
+        const p = panel.getBoundingClientRect();
+        store.set("aiPanelPos", { x: Math.round(p.left), y: Math.round(p.top) });
+      }
+      panelDrag = null;
+    }
     if (orbDrag) {
       if (orbDrag.moved) {
         orb.classList.remove("dragging");
@@ -243,9 +290,10 @@
   });
   orb.addEventListener("dblclick", () => {
     store.del("aiOrbPos");
+    store.del("aiPanelPos");   // un-pin the panel too, so it anchors to the orb again
     applyOrbPos(null);
     positionPanel();
-    toast("Assistant orb reset to default corner", "info");
+    toast("Assistant reset to default corner", "info");
   });
   sendBtn.addEventListener("click", send);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
