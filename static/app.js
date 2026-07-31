@@ -544,6 +544,22 @@ function theaterDefaultCols(count) {
   return 3;                    // was 4 columns
 }
 
+// Resizing snaps to WHOLE-TILE multiples of the current default span (1x, 2x, 3x... a normal
+// tile). Any other width leaves a strip narrower than one tile beside the enlarged tile, and
+// `grid-auto-flow: dense` can only place a tile where it actually FITS — so that strip stays
+// empty forever. Multiples guarantee the leftover is an exact number of tiles, which is what
+// lets the neighbours slide in and re-pack around a resized tile.
+function theaterSpanSteps(base) {
+  const steps = [];
+  for (let n = base; n <= 12; n += base) steps.push(n);
+  return steps.length ? steps : [12];
+}
+
+function snapTheaterSpan(cols, base) {
+  const steps = theaterSpanSteps(base);
+  return steps.reduce((best, s) => (Math.abs(s - cols) < Math.abs(best - cols) ? s : best), steps[0]);
+}
+
 // Resolved pixel track widths + column gap. Parsing the computed value (rather than
 // dividing container width by a column count) is what makes auto-fill grids work.
 function gridTracks(grid) {
@@ -574,7 +590,10 @@ function applyBentoCols(card, cols, view, fallback) {
   const grid = card.parentElement;
   const trackCount = grid ? gridTracks(grid).tracks.length : max;
   const dflt = fallback || BENTO_DEFAULT_COLS[view];
-  const wanted = Math.max(min, Math.min(max, cols || dflt));
+  let wanted = Math.max(min, Math.min(max, cols || dflt));
+  // Snap stored sizes too, so tiles saved before this rule (or under a different clip count)
+  // heal to a packable width instead of stranding a strip nothing can fill.
+  if (view === "theater") wanted = snapTheaterSpan(wanted, dflt);
   const applied = Math.max(1, Math.min(wanted, trackCount || max));
   card.style.gridColumnEnd = `span ${applied}`;
   return applied;
@@ -2263,6 +2282,10 @@ document.addEventListener("mousemove", (e) => {
     const ceiling = Math.min(max, b.trackCount || max);
     let cols = Math.round((targetW + b.gap) / (b.track + b.gap));
     cols = Math.max(min, Math.min(ceiling, cols));
+    // Theater: snap to whole-tile multiples so the leftover strip always fits a neighbour
+    if (b.view === "theater") {
+      cols = Math.min(ceiling, snapTheaterSpan(cols, theaterDefaultCols(state.theaterClips.length)));
+    }
     if (cols !== b.cols) {
       b.cols = cols;
       b.card.style.gridColumnEnd = `span ${cols}`;

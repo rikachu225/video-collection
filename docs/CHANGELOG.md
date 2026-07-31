@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.6.1 - 2026-07-30
+### Fixed
+- **Resizing a theater tile could strand permanent dead space beside it.** Tiles can only be placed where they *fit* — `grid-auto-flow: dense` backfills holes, but a leftover strip narrower than one tile can never be filled by anything, so it stayed empty. Resizing now snaps to **whole-tile multiples** of the current default span (1×, 2×, 3×… a normal tile), which guarantees the space beside an enlarged tile is an exact number of tiles and the neighbours re-pack into it. Measured on a mixed portrait/landscape theater: the reachable widths now cover 79–86% of the grid, and the widths that produced 68–72% are no longer reachable. Sizes saved before this rule (or under a different clip count) snap to the nearest valid width on render, so existing tiles heal themselves. Browse cards were already whole-card steps and are unchanged.
+
 ## v2.6.0 - 2026-07-30
 ### Added
 - **Resize tiles by dragging**: grab the `◢` handle in the corner of a theater tile or a browse card and drag to change its width. Resizing is **aspect-locked** — you set the width in whole grid columns and the height follows the clip's true aspect ratio, so tiles stay perfectly aligned and never letterbox or crop. **Enlarging one tile never resizes another**: column tracks are fixed, so the others keep their exact size (they only re-flow position as the grid re-packs). Theater tiles span 2–12 columns; browse cards resize in whole-card steps (1–3 cards wide). Sizes persist per view — theater sizes save to `theater.json` and travel with playlists, like loops and clip order; browse sizes save per folder in `folder_layouts.json`. Desktop only.
