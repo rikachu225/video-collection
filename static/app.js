@@ -2090,69 +2090,61 @@ function autoTileLayout() {
     return (v && v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9;
   });
 
-  // Split into R contiguous rows, balancing each row's total aspect so that once every row is
-  // justified to the canvas width, the rows come out at similar heights.
-  const partition = (R) => {
-    const target = aspects.reduce((a, b) => a + b, 0) / R;
+  // Rows are built by TARGET HEIGHT, not by clip count: keep adding clips to a row until
+  // justifying that row to the canvas width would make it shorter than the target, then close
+  // it. Every row therefore lands at roughly the same height. (A count-based split cannot do
+  // this — whichever row is designated "last" ends up absorbing every remaining clip, which
+  // renders as a few normal panels on top and a strip of tiny ones underneath.)
+  const buildRows = (targetH) => {
     const rows = [];
-    let row = [], sum = 0;
-    aspects.forEach((a, i) => {
-      // Close the row when ADDING this clip would land further from the target than
-      // stopping here does — closing only after overshooting produces lopsided rows.
-      const remaining = count - i;
-      if (row.length && rows.length < R - 1 && remaining > R - 1 - rows.length &&
-          Math.abs(sum + a - target) > Math.abs(sum - target)) {
-        rows.push(row); row = []; sum = 0;
-      }
-      row.push(i);
-      sum += a;
-    });
-    if (row.length) rows.push(row);
+    let items = [], sum = 0;
+    for (let i = 0; i < count; i++) {
+      items.push(i);
+      sum += aspects[i];
+      const h = (cw - gap * (items.length + 1)) / sum;
+      if (h <= targetH) { rows.push({ items, videoH: h }); items = []; sum = 0; }
+    }
+    if (items.length) {
+      // An under-full final row would balloon if justified — cap it at the target height
+      rows.push({ items, videoH: Math.min(targetH, (cw - gap * (items.length + 1)) / sum) });
+    }
     return rows;
   };
 
-  // Video height that makes a row exactly span the canvas width (widths are height x aspect)
-  const rowVideoH = (row) =>
-    (cw - gap * (row.length + 1)) / row.reduce((s, i) => s + aspects[i], 0);
+  const stackHeight = (rows) =>
+    rows.reduce((s, r) => s + r.videoH, 0) + titlebarHeight * rows.length + gap * (rows.length + 1);
 
-  // Pick the row count whose natural total height lands closest to filling the canvas
-  let best = null;
-  for (let R = 1; R <= count; R++) {
-    const rows = partition(R);
-    const videoHs = rows.map(rowVideoH);
-    const totalH = videoHs.reduce((a, b) => a + b, 0) +
-                   titlebarHeight * rows.length + gap * (rows.length + 1);
-    const score = Math.abs(ch - totalH);
-    if (!best || score < best.score) best = { rows, videoHs, totalH, score };
+  // A taller target closes rows sooner, so it yields more rows and a taller stack — meaning
+  // stack height rises monotonically with the target. Binary search the tallest target that
+  // still fits the canvas.
+  let lo = 24, hi = ch;
+  for (let k = 0; k < 40; k++) {
+    const mid = (lo + hi) / 2;
+    if (stackHeight(buildRows(mid)) > ch) hi = mid; else lo = mid;
   }
+  const rows = buildRows(lo);
 
-  // Never overflow the canvas: scale the video heights (so aspects stay exact) and centre
-  const availVideoH = ch - gap * (best.rows.length + 1) - titlebarHeight * best.rows.length;
-  const naturalVideoH = best.videoHs.reduce((a, b) => a + b, 0);
-  // Floor the scale: with an extreme clip count / short canvas availVideoH can go negative,
-  // which would produce zero or negative panel sizes.
-  const scale = naturalVideoH > availVideoH
-    ? Math.max(0.05, availVideoH / naturalVideoH)
-    : 1;
-  const videoHs = best.videoHs.map((h) => h * scale);
-  const usedH = videoHs.reduce((a, b) => a + b, 0) +
-                titlebarHeight * best.rows.length + gap * (best.rows.length + 1);
+  // Safety net for extreme clip counts: if even the smallest rows overflow, scale the video
+  // heights (aspects stay exact) rather than letting panels spill off the canvas.
+  const naturalH = rows.reduce((s, r) => s + r.videoH, 0);
+  const availH = ch - gap * (rows.length + 1) - titlebarHeight * rows.length;
+  const scale = stackHeight(rows) > ch ? Math.max(0.05, availH / naturalH) : 1;
+  rows.forEach((r) => { r.videoH *= scale; });
 
-  let y = Math.max(gap, (ch - usedH) / 2 + gap);
-  best.rows.forEach((row, r) => {
-    const videoH = videoHs[r];
-    const widths = row.map((i) => videoH * aspects[i]);
-    const rowW = widths.reduce((a, b) => a + b, 0) + gap * (row.length - 1);
+  let y = Math.max(gap, (ch - stackHeight(rows)) / 2 + gap);
+  rows.forEach((row) => {
+    const widths = row.items.map((i) => row.videoH * aspects[i]);
+    const rowW = widths.reduce((a, b) => a + b, 0) + gap * (row.items.length - 1);
     let x = Math.max(gap, (cw - rowW) / 2);
-    row.forEach((idx, k) => {
+    row.items.forEach((idx, k) => {
       const panel = panels[idx];
       panel.style.left = `${Math.round(x)}px`;
       panel.style.top = `${Math.round(y)}px`;
       panel.style.width = `${Math.round(widths[k])}px`;
-      panel.style.height = `${Math.round(videoH + titlebarHeight)}px`;
+      panel.style.height = `${Math.round(row.videoH + titlebarHeight)}px`;
       x += widths[k] + gap;
     });
-    y += videoH + titlebarHeight + gap;
+    y += row.videoH + titlebarHeight + gap;
   });
 }
 
