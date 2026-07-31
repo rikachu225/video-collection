@@ -2069,7 +2069,8 @@ function buildWorkspacePanels() {
 }
 
 function autoTileLayout() {
-  const panels = $$(".ws-panel");
+  // Array, not the raw NodeList — the layout below uses .map, which NodeList doesn't have
+  const panels = [...$$(".ws-panel")];
   const count = panels.length;
   if (count === 0) return;
 
@@ -2079,55 +2080,79 @@ function autoTileLayout() {
   const gap = 8;
   const titlebarHeight = 32; // approximate height of .ws-panel-titlebar
 
-  let cols, rows;
-  if (count === 1) { cols = 1; rows = 1; }
-  else if (count === 2) { cols = 2; rows = 1; }
-  else if (count <= 4) { cols = 2; rows = 2; }
-  else if (count <= 6) { cols = 3; rows = 2; }
-  else if (count <= 9) { cols = 3; rows = 3; }
-  else { cols = 4; rows = Math.ceil(count / 4); }
+  // Bento (justified rows). The old layout built a uniform cols x rows grid and shrank each
+  // clip to fit INSIDE its slot, so a portrait clip in a landscape slot left dead margins on
+  // both sides. Here every panel keeps its true aspect and each row is scaled so the row spans
+  // the full canvas width — panels sit edge to edge with no wasted space. Panels stay
+  // absolutely positioned, so they are still freely draggable, resizable and overlappable.
+  const aspects = panels.map((p) => {
+    const v = p.querySelector(".ws-video");
+    return (v && v.videoWidth && v.videoHeight) ? v.videoWidth / v.videoHeight : 16 / 9;
+  });
 
-  // Grid slot size (max available space per panel)
-  const slotW = Math.floor((cw - gap * (cols + 1)) / cols);
-  const slotH = Math.floor((ch - gap * (rows + 1)) / rows);
+  // Split into R contiguous rows, balancing each row's total aspect so that once every row is
+  // justified to the canvas width, the rows come out at similar heights.
+  const partition = (R) => {
+    const target = aspects.reduce((a, b) => a + b, 0) / R;
+    const rows = [];
+    let row = [], sum = 0;
+    aspects.forEach((a, i) => {
+      // Close the row when ADDING this clip would land further from the target than
+      // stopping here does — closing only after overshooting produces lopsided rows.
+      const remaining = count - i;
+      if (row.length && rows.length < R - 1 && remaining > R - 1 - rows.length &&
+          Math.abs(sum + a - target) > Math.abs(sum - target)) {
+        rows.push(row); row = []; sum = 0;
+      }
+      row.push(i);
+      sum += a;
+    });
+    if (row.length) rows.push(row);
+    return rows;
+  };
 
-  panels.forEach((panel, i) => {
-    const col = i % cols;
-    const row = Math.floor(i / cols);
-    const slotX = gap + col * (slotW + gap);
-    const slotY = gap + row * (slotH + gap);
+  // Video height that makes a row exactly span the canvas width (widths are height x aspect)
+  const rowVideoH = (row) =>
+    (cw - gap * (row.length + 1)) / row.reduce((s, i) => s + aspects[i], 0);
 
-    // Get video's natural aspect ratio
-    const video = panel.querySelector(".ws-video");
-    const vw = video?.videoWidth || 0;
-    const vh = video?.videoHeight || 0;
-    const ratio = (vw && vh) ? vw / vh : 16 / 9; // fallback 16:9
+  // Pick the row count whose natural total height lands closest to filling the canvas
+  let best = null;
+  for (let R = 1; R <= count; R++) {
+    const rows = partition(R);
+    const videoHs = rows.map(rowVideoH);
+    const totalH = videoHs.reduce((a, b) => a + b, 0) +
+                   titlebarHeight * rows.length + gap * (rows.length + 1);
+    const score = Math.abs(ch - totalH);
+    if (!best || score < best.score) best = { rows, videoHs, totalH, score };
+  }
 
-    // Fit panel within slot preserving aspect ratio
-    // Available height for video = slotH - titlebar
-    const availH = slotH - titlebarHeight;
-    let panelW, videoH;
+  // Never overflow the canvas: scale the video heights (so aspects stay exact) and centre
+  const availVideoH = ch - gap * (best.rows.length + 1) - titlebarHeight * best.rows.length;
+  const naturalVideoH = best.videoHs.reduce((a, b) => a + b, 0);
+  // Floor the scale: with an extreme clip count / short canvas availVideoH can go negative,
+  // which would produce zero or negative panel sizes.
+  const scale = naturalVideoH > availVideoH
+    ? Math.max(0.05, availVideoH / naturalVideoH)
+    : 1;
+  const videoHs = best.videoHs.map((h) => h * scale);
+  const usedH = videoHs.reduce((a, b) => a + b, 0) +
+                titlebarHeight * best.rows.length + gap * (best.rows.length + 1);
 
-    if (slotW / availH > ratio) {
-      // Slot is wider than video — height-constrained
-      videoH = availH;
-      panelW = Math.floor(videoH * ratio);
-    } else {
-      // Slot is taller than video — width-constrained
-      panelW = slotW;
-      videoH = Math.floor(panelW / ratio);
-    }
-
-    const panelH = videoH + titlebarHeight;
-
-    // Center within the grid slot
-    const offsetX = Math.floor((slotW - panelW) / 2);
-    const offsetY = Math.floor((slotH - panelH) / 2);
-
-    panel.style.left = `${slotX + offsetX}px`;
-    panel.style.top = `${slotY + offsetY}px`;
-    panel.style.width = `${panelW}px`;
-    panel.style.height = `${panelH}px`;
+  let y = Math.max(gap, (ch - usedH) / 2 + gap);
+  best.rows.forEach((row, r) => {
+    const videoH = videoHs[r];
+    const widths = row.map((i) => videoH * aspects[i]);
+    const rowW = widths.reduce((a, b) => a + b, 0) + gap * (row.length - 1);
+    let x = Math.max(gap, (cw - rowW) / 2);
+    row.forEach((idx, k) => {
+      const panel = panels[idx];
+      panel.style.left = `${Math.round(x)}px`;
+      panel.style.top = `${Math.round(y)}px`;
+      panel.style.width = `${Math.round(widths[k])}px`;
+      panel.style.height = `${Math.round(videoH + titlebarHeight)}px`;
+      x += widths[k] + gap;
+    });
+    y += videoH + titlebarHeight + gap;
   });
 }
 

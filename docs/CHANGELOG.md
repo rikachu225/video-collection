@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.6.2 - 2026-07-30
+### Changed
+- **Workspace layout button is now a bento layout** (tooltip: "Bento Layout"). It used to build a uniform `cols x rows` grid and shrink each clip to fit *inside* its slot, then centre it — so a portrait clip sitting in a landscape-shaped slot left large dead margins on both sides. `autoTileLayout()` now lays panels out in **justified rows**: every panel keeps its exact aspect ratio and each row is scaled so the row spans the canvas width, with panels edge to edge. The row count is chosen by trying every value and keeping the one whose natural height lands closest to filling the canvas; rows are balanced by aspect sum so they come out at similar heights. Measured on a mixed portrait/landscape workspace: 75% of the canvas covered vs ~57% for the old slot-fitting grid, with every panel's aspect exact. Panels stay absolutely positioned, so they remain freely draggable, resizable and overlappable afterwards — this only changes where the button puts them.
+
 ## v2.6.1 - 2026-07-30
 ### Fixed
 - **Resizing a theater tile could strand permanent dead space beside it.** Tiles can only be placed where they *fit* — `grid-auto-flow: dense` backfills holes, but a leftover strip narrower than one tile can never be filled by anything, so it stayed empty. Resizing now snaps to **whole-tile multiples** of the current default span (1×, 2×, 3×… a normal tile), which guarantees the space beside an enlarged tile is an exact number of tiles and the neighbours re-pack into it. Measured on a mixed portrait/landscape theater: the reachable widths now cover 79–86% of the grid, and the widths that produced 68–72% are no longer reachable. Sizes saved before this rule (or under a different clip count) snap to the nearest valid width on render, so existing tiles heal themselves. Browse cards were already whole-card steps and are unchanged.
