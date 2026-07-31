@@ -2,7 +2,7 @@
 
 ## v2.7.1 - 2026-07-31
 ### Added
-- **The assistant panel is draggable, not just the orb.** Grab it anywhere on its chrome — header, notice strip, padding — and it moves; the position persists per browser. The resize grip, the input, the buttons and the message list are excluded, so typing, sending and selecting text still work. A dragged panel stays where you put it instead of re-anchoring to the orb; double-clicking the orb clears both positions and restores the default corner.
+- **The assistant panel is draggable, not just the orb — and the orb travels with it.** Grab it anywhere on its chrome — header, notice strip, padding — and both move together by the same amount, keeping their spacing, so the button is never left stranded across the screen. Both positions persist per browser. The resize grip, the input, the buttons and the message list are excluded, so typing, sending and selecting text still work. A dragged panel stays where you put it instead of re-anchoring to the orb; double-clicking the orb clears both positions and restores the default corner.
 - **Layout requests understand which surface you're looking at.** Asking for a bento while the workspace is open now re-arranges the *workspace panels* (new `bento_workspace` tool) instead of silently restyling the theater grid you can't see. `workspaceOpen` rides in the assistant context so the model can tell the two apart. Verified live: same sentence routes to `bento_workspace` with the workspace open and `set_tile_size` with it closed.
 
 ### Fixed

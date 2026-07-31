@@ -208,9 +208,13 @@
     if (e.button !== 0) return;
     if (e.target.closest(".ai-resize-handle, input, textarea, button, .ai-messages")) return;
     const p = panel.getBoundingClientRect();
+    const o = orb.getBoundingClientRect();
     panelDrag = {
       offX: e.clientX - p.left, offY: e.clientY - p.top,
       startX: e.clientX, startY: e.clientY, moved: false,
+      // The orb travels with the panel — they're one object, so dragging the window
+      // shouldn't leave its button stranded across the screen.
+      panelLeft: p.left, panelTop: p.top, orbLeft: o.left, orbTop: o.top,
     };
   });
 
@@ -222,11 +226,16 @@
         e.preventDefault();
         const p = panel.getBoundingClientRect();
         const vw = window.innerWidth, vh = window.innerHeight;
-        panel.style.left = clampNum(e.clientX - panelDrag.offX, ORB_MARGIN,
-                                    Math.max(ORB_MARGIN, vw - p.width - ORB_MARGIN)) + "px";
-        panel.style.top = clampNum(e.clientY - panelDrag.offY, ORB_MARGIN,
-                                   Math.max(ORB_MARGIN, vh - p.height - ORB_MARGIN)) + "px";
+        const left = clampNum(e.clientX - panelDrag.offX, ORB_MARGIN,
+                              Math.max(ORB_MARGIN, vw - p.width - ORB_MARGIN));
+        const top = clampNum(e.clientY - panelDrag.offY, ORB_MARGIN,
+                             Math.max(ORB_MARGIN, vh - p.height - ORB_MARGIN));
+        panel.style.left = left + "px";
+        panel.style.top = top + "px";
         panel.style.right = "auto"; panel.style.bottom = "auto";
+        // Carry the orb along by however far the panel actually moved (post-clamp)
+        applyOrbPos({ x: panelDrag.orbLeft + (left - panelDrag.panelLeft),
+                      y: panelDrag.orbTop + (top - panelDrag.panelTop) });
       }
     }
     if (orbDrag) {
@@ -254,7 +263,9 @@
       if (panelDrag.moved) {
         panel.classList.remove("dragging");
         const p = panel.getBoundingClientRect();
+        const o = orb.getBoundingClientRect();
         store.set("aiPanelPos", { x: Math.round(p.left), y: Math.round(p.top) });
+        store.set("aiOrbPos", { x: Math.round(o.left), y: Math.round(o.top) });
       }
       panelDrag = null;
     }
