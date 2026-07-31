@@ -254,6 +254,10 @@ Toast container:    9999
 - **Resolve-by-name → act-by-path**: `resolve_refs()` matches the user's words against the CONTEXT names (which carry in-app labels from `/api/videos` + `/api/theater`), then executors act on the clip's `path`. This is why renamed clips "just work" — and why the AI sees labels without them being on disk.
 - **Custom theater name (v2.5.4)**: `theaterName` rides in the context + system prompt, so "add these to my theater" maps to the theater tools. Frontend sends `state.theaterName` from `buildContext()`.
 - **Bulk add (v2.5.4)**: `add_to_theater` accepts `'all'`/`'everything'` → adds every video in the current folder via `_srv_add_many_to_theater()` (one load+save, dedupes, reports count/skipped).
+- **Model: `gemini-3.6-flash`** (pinned, v2.7.0). Chosen for multi-step tool calling (Terminal-Bench 2.1 78.0 vs 54 for the lite tier, ~17% fewer output tokens). `gemini-flash-latest` auto-tracks releases if you prefer that; override via `aiAssistant.model`.
+- **NEVER send function results as `role="tool"`** — newer models 400 with `Role 'tool' is not supported`. Use `role="user"` for the function-response parts (documented shape, works across versions).
+- **`applyRefresh()` must run BEFORE queued UI commands** in `assistant.js`. Otherwise a turn like "load playlist X and open the workspace" opens the workspace on the *old* clips.
+- **Layout design (v2.7.0)**: `set_tile_size` takes a LIST so the model composes a whole layout in one call; sizes are relative (`small`/`medium`/`large`/`hero`/`full`) and map to whole-tile multiples of `_theater_base_cols(count)`, mirroring `theaterDefaultCols` in app.js. `create_folder` deliberately returns `needs_location` + the available roots rather than guessing a drive.
 - No destructive deletes via chat. Privacy: chat + library names are sent to Google Gemini.
 
 ## Dependencies

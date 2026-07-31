@@ -1,5 +1,17 @@
 # Changelog
 
+## v2.7.0 - 2026-07-31
+### Added
+- **The assistant can design bento layouts.** New `set_tile_size` tool takes a *list*, so a whole look is composed in one call — e.g. "organize this into a Pinterest-style bento with clip 1 as the hero" produces one hero tile, a couple of double-wide tiles for rhythm, and the rest normal. Sizes are relative (`small` = normal, `medium` = 2x, `large`/`hero` = 3x, `full` = whole row) and always resolve to the whole-tile multiples the grid needs (v2.6.1), so an AI-composed layout can't strand dead space.
+- **The assistant can create folders.** New `create_folder` tool. If you don't say where, it does **not** guess — it returns the available locations and asks ("Where would you like to create the *Nature* folder?"), then creates it and registers it as a source. Chains with `download`, so "make a folder called X and download this link into it" is one conversation.
+
+### Changed
+- **Default model is now `gemini-3.6-flash`** (was the `gemini-flash-latest` alias). This assistant is a multi-step tool-caller and 3.6-flash is substantially stronger there — Terminal-Bench 2.1 78.0 vs 54 for the lite tier — while using ~17% fewer output tokens per task. Override per install via `aiAssistant.model`; set it back to `gemini-flash-latest` to auto-track future releases instead of pinning.
+
+### Fixed
+- **`role="tool"` is rejected by newer models.** The function-calling loop returned tool results as `role="tool"`, which `gemini-3.6-flash` refuses with a 400 (`Role 'tool' is not supported`). Results now go back as `role="user"`, the documented shape, which works across model versions. Without this the assistant would have failed on *every* tool call after the model switch.
+- **UI commands ran before the data refresh.** A turn like "switch to the Chill playlist and open it in the workspace" returns both a data change and `open_workspace`; the command ran first, so the workspace opened on the *previous* playlist's clips. `applyRefresh()` now runs before the queued UI commands.
+
 ## v2.6.3 - 2026-07-30
 ### Fixed
 - **Bento layout dumped most clips into one tiny row.** The row split was count-based: it closed a row once its aspect sum passed `total / R`, but the guard `rows.length < R - 1` meant the final row could never close — so it absorbed *every* remaining clip. The result was a few normal-sized panels on top and a strip of ultra-small ones underneath. Rows are now built by **target height** (the standard justified-gallery approach): clips are added to a row until justifying it to the canvas width would drop it below the target, then the row closes, so no row can absorb the remainder. The target height itself is binary-searched for the tallest value whose stack still fits the canvas. With 12 mixed portrait/landscape/square clips the split is now 6 + 6 with a tallest-to-shortest row ratio of 1.16 (was one normal row plus a tiny strip), and every panel's aspect is still exact. An under-full final row is capped at the target height so it can't balloon.

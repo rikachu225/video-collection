@@ -22,7 +22,11 @@ logging.getLogger("google_genai.types").setLevel(logging.ERROR)
 
 # "gemini-flash-latest" is an alias that auto-tracks Google's newest flash model, so the
 # assistant doesn't break when an older model is retired. Override per-install via aiAssistant.model.
-DEFAULT_MODEL = "gemini-flash-latest"
+# Pinned to the agentic flash tier rather than the `gemini-flash-latest` alias: this assistant
+# is a multi-step tool-caller, and 3.6-flash is markedly stronger there (Terminal-Bench 2.1
+# 78.0 vs 54 for the lite tier) while using ~17% fewer output tokens per task. Override per
+# install via `aiAssistant.model`; switch back to `gemini-flash-latest` to auto-track releases.
+DEFAULT_MODEL = "gemini-3.6-flash"
 MAX_ITERATIONS = 5
 
 
@@ -151,6 +155,36 @@ _TOOL_DEFS = {
         "required": ["url", "folder"]}),
     "download_to_theater": ("Download a URL and add it straight to the theater.", {
         "type": "object", "properties": {"url": _str("Video URL.")}, "required": ["url"]}),
+    "create_folder": ("Create a new folder for videos. If the user didn't say WHERE, call this "
+                      "with just the name — the reply lists the available locations so you can "
+                      "ask them which one, then call again with `location`.", {
+        "type": "object",
+        "properties": {
+            "name": _str("Folder name to create."),
+            "location": _str("Where to create it: an existing source name, or a full path. "
+                             "Omit if the user hasn't said."),
+        },
+        "required": ["name"]}),
+    "set_tile_size": ("Set how wide clips appear in the theater's bento grid. Takes several at "
+                      "once, so a whole layout can be composed in one call.", {
+        "type": "object",
+        "properties": {
+            "sizes": {
+                "type": "array",
+                "description": "One entry per clip to resize.",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "clip": _str("Clip reference: 1-based index, a name substring, or 'all'."),
+                        "size": {"type": "string", "enum": ["small", "medium", "large", "hero", "full"],
+                                 "description": "small = normal, medium = 2x wide, large/hero = 3x, "
+                                                "full = the whole row."},
+                    },
+                    "required": ["clip", "size"],
+                },
+            },
+        },
+        "required": ["sizes"]}),
     "search_videos": ("Search all folders for videos by name.", {
         "type": "object", "properties": {"query": _str("Search text.")}, "required": ["query"]}),
     "list_folders": ("List all library folders with video counts.", {"type": "object", "properties": {}}),
@@ -203,6 +237,12 @@ def build_system_prompt(ctx):
         "ask a brief clarifying question instead of guessing. "
         "'all of these', 'all of them', 'everything here' means every video in the current folder — "
         "pass 'all' to add_to_theater. "
+        "You can design theater layouts: set_tile_size takes a LIST, so compose the whole look in "
+        "ONE call rather than one call per clip. Sizes are relative to the grid's normal tile — "
+        "small = normal, medium = 2x wide, large/hero = 3x, full = the entire row. For a "
+        "magazine or Pinterest-style look, give one clip 'hero' or 'full' and leave the rest "
+        "'small' so they tile around it; vary a couple to 'medium' for rhythm. Don't make "
+        "everything large — the result only reads as a bento if most tiles stay small. "
         "If a video is currently open (see openVideo in the context), interpret 'this', "
         "'this clip', 'the current one', or 'it' as that open clip — use its theaterIndex. "
         "If a playlist is currently loaded (see loadedPlaylist), 'save this playlist' or "
@@ -324,6 +364,56 @@ def _srv_add_many_to_theater(clips):
     return added
 
 
+def _srv_media_roots():
+    import server
+    return server._get_media_roots()
+
+
+def _srv_create_folder(parent, name):
+    """Create a folder on disk and register it as a source. Returns the endpoint's JSON."""
+    import server
+    with server.app.test_request_context(json={"path": parent, "name": name}):
+        resp = server.create_collection()
+    return resp.json if hasattr(resp, "json") else resp[0].json
+
+
+# The theater grid is 12 columns and its default tile span depends on how many clips are in it
+# (mirrors theaterDefaultCols in app.js). Sizes are whole-tile MULTIPLES of that span — any
+# other width leaves a strip too narrow for another tile, which strands dead space (v2.6.1).
+def _theater_base_cols(count):
+    if count <= 1:
+        return 12
+    if count <= 4:
+        return 6
+    if count <= 9:
+        return 4
+    return 3
+
+
+_TILE_MULTIPLIER = {"small": 1, "medium": 2, "large": 3, "hero": 3}
+
+
+def _tile_cols(size, base):
+    """Map a size word to a column span, or None if the word isn't one we know."""
+    word = (size or "").strip().lower()
+    if word == "full":
+        return 12
+    mult = _TILE_MULTIPLIER.get(word)
+    if mult is None:
+        return None
+    return max(base, min(12, base * mult))
+
+
+def _srv_set_tile_sizes(mapping):
+    """Write {path: cols} onto theater clips in one load+save."""
+    import server
+    data = server._load_json(server.THEATER_FILE, {"clips": []})
+    for clip in data["clips"]:
+        if clip["path"] in mapping:
+            clip["bentoCols"] = mapping[clip["path"]]
+    server._save_json(server.THEATER_FILE, data)
+
+
 def execute_tool(name, args, ctx, sink):
     """Execute one tool call. Returns a JSON-able result dict for the model."""
     args = args or {}
@@ -432,6 +522,57 @@ def execute_tool(name, args, ctx, sink):
 
     if name in ("download", "download_to_theater"):
         return _execute_download(name, args, ctx, sink)
+
+    if name == "create_folder":
+        folder = (args.get("name") or "").strip()
+        if not folder:
+            return {"error": "What should the folder be called?"}
+        location = (args.get("location") or "").strip()
+        roots = _srv_media_roots()
+        if not location:
+            # Don't guess a drive — hand back the choices so the model can ask.
+            return {"needs_location": True,
+                    "locations": [{"name": r.get("name"), "path": r["path"]} for r in roots],
+                    "message": "Ask the user which of these locations to create it in, then "
+                               "call create_folder again with `location` set."}
+        # A source name is friendlier than a path; accept either.
+        parent = next((r["path"] for r in roots
+                       if location.lower() == (r.get("name") or "").lower()
+                       or location.lower() == r["path"].lower()), location)
+        body = _srv_create_folder(parent, folder)
+        if body.get("error"):
+            return {"error": body["error"]}
+        sink.mark("folders")
+        return {"status": "created", "folder": folder, "path": body["source"]["path"]}
+
+    if name == "set_tile_size":
+        clips = ctx.get("theaterClips", [])
+        if not clips:
+            return {"error": "The theater is empty — add clips before sizing them."}
+        base = _theater_base_cols(len(clips))
+        entries = args.get("sizes") or []
+        if isinstance(entries, dict):
+            entries = [entries]
+        mapping, applied, errors = {}, [], []
+        for entry in entries:
+            cols = _tile_cols(entry.get("size"), base)
+            if cols is None:
+                errors.append(f"Unknown size '{entry.get('size')}'.")
+                continue
+            matches = resolve_refs(entry.get("clip"), clips)
+            if not matches:
+                errors.append(f"No theater clip matches '{entry.get('clip')}'.")
+                continue
+            for _, clip in matches:
+                mapping[clip["path"]] = cols
+                applied.append({"clip": clip["name"], "size": entry.get("size"), "cols": cols})
+        if mapping:
+            _srv_set_tile_sizes(mapping)
+            sink.mark("theater")
+        result = {"status": "ok" if applied else "error", "applied": applied, "count": len(applied)}
+        if errors:
+            result["errors"] = errors
+        return result
 
     if name == "search_videos":
         return _search_videos(args.get("query", ""))
@@ -550,7 +691,10 @@ def run_agent(message, history, ctx, config, client=None):
         for fc in fcs:
             result = execute_tool(fc.name, dict(fc.args or {}), ctx, sink)
             tool_parts.append(types.Part.from_function_response(name=fc.name, response=result))
-        contents.append(types.Content(role="tool", parts=tool_parts))
+        # Function results go back as role="user", not "tool": newer models (3.6-flash) reject
+        # role="tool" outright with a 400, and "user" is the documented shape for function
+        # responses across versions.
+        contents.append(types.Content(role="user", parts=tool_parts))
     else:
         last_text = last_text or "I did as much as I could in one go — ask me to continue if needed."
 
