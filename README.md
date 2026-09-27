@@ -2,7 +2,7 @@
 
 A self-hosted, zero-build web media center for browsing, playing, and managing personal video collections — now with a natural-language **AI assistant** and a **bento-style adaptive grid**. Cyberpunk-themed, with a fullscreen workspace for multi-video layouts and a mobile-friendly layout.
 
-**Free. Private. No cloud. No accounts. No tracking.** *(The AI assistant is optional, bring-your-own-key, and stays off until you add a key — see [Privacy](#-privacy).)*
+**Free. Private. No cloud. No accounts. No tracking.** *(The AI assistant is optional, bring-your-own-key, and stays off until you add a key. Everything that can reach the internet, and when, is listed under [Privacy](#-privacy).)*
 
 ## ✨ Features
 
@@ -41,6 +41,11 @@ A self-hosted, zero-build web media center for browsing, playing, and managing p
 - **Save/load named playlists** — organize different video collections
 - **Layout persistence** — workspace layouts save with playlists
 - **Quick load** — one click to swap your entire theater setup
+
+### 📺 Streaming Launcher
+- **One-click tiles** — Netflix, Max, Disney+, Prime Video, Hulu, YouTube and more, each opening in its own tab (nothing is embedded — the DRM services block playback inside other apps)
+- **Make it yours** — add any https service, rename, reorder or hide tiles in **Settings → Streaming**
+- **Icons fetched once, then served locally** — see [Privacy](#-privacy) for exactly what is fetched
 
 ### 📱 Mobile & Responsive
 - **Phone layout** — bottom tab bar, slide-up folder sheet, tap-to-expand search, and a toolbar overflow menu
@@ -121,7 +126,8 @@ video-collection/
 │   ├── config.json        ← Your media paths + BYOK key (git-ignored, auto-generated)
 │   ├── theater.json       ← Current theater state (auto-generated)
 │   ├── playlists.json     ← Saved playlists (auto-generated)
-│   └── folder_layouts.json ← Popup player positions (auto-generated)
+│   ├── folder_layouts.json ← Popup player positions (auto-generated)
+│   └── service_icons/     ← Streaming tile icons: your drop-ins + fetched cache in auto/ (git-ignored)
 ├── tests/                 ← pytest suite (backend + AI agent)
 ├── install.bat / .sh      ← One-click setup
 ├── start.bat / .sh        ← Launch server
@@ -145,12 +151,16 @@ video-collection/
 
 ## 🔒 Privacy
 
-- **100% local by default** — nothing leaves your machine
+- **Local-first** — your videos, playlists and settings stay on your machine (the optional AI assistant is the only thing that sends library names out; see below)
 - **No analytics** — zero tracking, zero telemetry
 - **No accounts** — no login, no cloud sync
 - **Your data stays yours** — config and playlists are plain JSON files on disk
 
-**AI assistant caveat (honest disclosure):** the assistant is **optional and disabled** until you add your own Gemini key. When you *do* use it, your chat messages and library names (folder and clip titles) are sent to **Google Gemini** so it can interpret your request — that's the one thing that leaves your machine, and only while chatting. Video files themselves are never uploaded. Don't configure it (or leave it disabled) to keep the app fully offline.
+**What does go online (honest disclosure).** The app reaches the internet for three features only, and only when you use them:
+
+- **Streaming tile icons** — when the Streaming tiles are drawn (opening the **Streaming** view, or saving a change in **Settings → Streaming**), the server fetches each *enabled* service's icon it doesn't have yet from that service's website: the homepage (only to find the icon it declares, sometimes on the service's CDN) and standard paths like `/apple-touch-icon.png` and `/favicon.ico`. Plain HTTPS `GET`s with a generic user agent — no cookies, no referrer, nothing about you or your library; the site sees your IP address, as with any web request. Icons are cached in `data/service_icons/auto/` and served locally from then on, so your browser never contacts those sites to draw a tile (no hotlinking). A failed lookup is retried at most once a day; **Settings → Refresh Icons** re-fetches on demand. **To opt out:** hide the services you don't use (hidden ones are never looked up), or drop your own image in as `data/service_icons/<service-id>.png` — it always wins and that site is never contacted. Built-in ids: `netflix`, `max`, `disneyplus`, `primevideo`, `hulu`, `appletv`, `peacock`, `paramount`, `youtube`, `crunchyroll`, `twitch`; a custom service's id is its name in lowercase-with-dashes.
+- **URL downloads** — pasting a link downloads the video from that site via `yt-dlp`.
+- **AI assistant** — **optional and disabled** until you add your own Gemini key. When you *do* use it, your chat messages and library names (folder and clip titles) are sent to **Google Gemini** so it can interpret your request — only while chatting. Video files themselves are never uploaded. Leave it unconfigured to keep your library names on your machine.
 
 ## 🛡️ Security Notice
 
