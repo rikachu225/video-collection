@@ -1075,6 +1075,7 @@ ICON_READ_CHUNK = 64 * 1024
 ICON_MISS_TTL = 24 * 3600          # don't retry a failed lookup for a day
 ICON_TIMEOUT_MISS_TTL = 3600       # ...unless it ran out of time: then retry after an hour
 _ICON_TIMEOUT_MISS = b"timeout"    # miss-marker body that selects ICON_TIMEOUT_MISS_TTL
+ICON_WRITE_RETRY = 300             # after a failed cache write, no new lookup for 5 minutes
 _icon_clock = time.monotonic       # indirection so tests can drive the budget
 _ICON_UA = "Mozilla/5.0 (compatible; VideoCollection/2.8; +local)"
 _ICON_TYPES = {
@@ -1633,6 +1634,7 @@ def _clear_fetched_icon(service_id):
     the URL the service had when it started, so it is discarded, not written after this.
     """
     _invalidate_icon_lookups(service_id)
+    _icon_write_failed_until.pop(service_id, None)     # Refresh Icons retries at once
     removed = 0
     for ext in _ICON_EXTS + (".miss",):
         removed += _discard_icon_file(SERVICE_ICONS_AUTO / f"{service_id}{ext}")
@@ -1696,9 +1698,24 @@ def _write_icon_atomically(target, body):
     except BaseException:
         try:
             os.unlink(tmp)
-        except OSError:
-            pass
+        except OSError as e:
+            app.logger.warning("Could not remove the temp file %s from the icon cache: %s",
+                               os.path.basename(tmp), e.strerror or type(e).__name__)
         raise
+
+
+# Service id -> _icon_clock() before which no new lookup starts, after a cache write
+# failed (disk full, a temp file locked by AV or a sync client, ACLs). Kept in memory,
+# never as a .miss marker: a passing disk problem must not hide an icon for a day.
+_icon_write_failed_until = {}
+
+
+def _icon_write_failed(service_id, name, e):
+    """Log a failed cache write (file name only) and hold off for ICON_WRITE_RETRY, so
+    renders don't each repeat the whole outbound lookup while the disk refuses."""
+    app.logger.warning("Could not write %s to the icon cache (%s); next try in %d minutes",
+                       name, e.strerror or type(e).__name__, ICON_WRITE_RETRY // 60)
+    _icon_write_failed_until[service_id] = _icon_clock() + ICON_WRITE_RETRY
 
 
 def _icon_miss_stands(marker):
@@ -1727,6 +1744,8 @@ def _fetch_service_icon(service, generation=None):
     marker = _icon_miss_marker(service_id)
     if _icon_miss_stands(marker):
         return None
+    if _icon_clock() < _icon_write_failed_until.get(service_id, float("-inf")):
+        return None
 
     deadline = _icon_clock() + ICON_BUDGET
     lookup = _IconLookup()                 # one DNS answer per host for the whole lookup
@@ -1746,7 +1765,8 @@ def _fetch_service_icon(service, generation=None):
                 if not current:
                     return None            # re-pointed or refreshed meanwhile: stale result
                 _write_icon_atomically(target, body)
-        except OSError:
+        except OSError as e:
+            _icon_write_failed(service_id, target.name, e)
             return None
         _discard_icon_file(marker)
         return target
@@ -1755,9 +1775,11 @@ def _fetch_service_icon(service, generation=None):
     with _icon_commit(service_id, generation) as current:
         if current:
             try:
-                marker.write_bytes(_ICON_TIMEOUT_MISS if timed_out else b"")   # negative cache
-            except OSError:
-                pass
+                # Negative cache. Atomic like the icon: a failed write leaves no marker
+                # at all, never an empty one that would read as a day-long miss.
+                _write_icon_atomically(marker, _ICON_TIMEOUT_MISS if timed_out else b"")
+            except OSError as e:
+                _icon_write_failed(service_id, marker.name, e)
     return None
 
 

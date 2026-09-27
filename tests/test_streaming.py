@@ -965,12 +965,10 @@ def _leftovers(server):
     return sorted(p.name for p in server.SERVICE_ICONS_AUTO.iterdir())
 
 
-def test_a_failed_cache_write_leaves_nothing_behind(tmp_path, monkeypatch):
-    # The disk fills up after 10 bytes. Writing straight to netflix.png used to leave
-    # that stub in place, and the next request served it as the icon. io.open is what
-    # both os.fdopen and Path.write_bytes call (Flask's send_file uses builtins.open).
-    server, client = make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
+def _disk_full(monkeypatch):
+    """Every file opened for writing takes 10 bytes, then fails as if the disk were
+    full. io.open is what os.fdopen and Path.write_bytes call (Flask's send_file uses
+    builtins.open). Undo with monkeypatch.undo() or a monkeypatch.context()."""
     real_open = io.open
 
     class _DiskFull:
@@ -992,15 +990,58 @@ def test_a_failed_cache_write_leaves_nothing_behind(tmp_path, monkeypatch):
         f = real_open(file, mode, *args, **kwargs)
         return _DiskFull(f) if "w" in mode else f
 
-    with monkeypatch.context() as m:
-        m.setattr(io, "open", disk_full_open)
-        assert client.get("/api/service-icon/netflix").status_code == 404
-        assert client.get("/api/service-icon/netflix").status_code == 404   # no stub served
-    assert _leftovers(server) == []          # no partial icon, no temp file, no miss marker
+    monkeypatch.setattr(io, "open", disk_full_open)
 
+
+def test_a_failed_cache_write_leaves_nothing_behind(tmp_path, monkeypatch, caplog):
+    # Writing straight to netflix.png used to leave a 10-byte stub in place, and the next
+    # request served it as the icon.
+    server, client = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    calls = []
+
+    def fetch(url, accept="*/*", deadline=None, lookup=None):
+        calls.append(url)
+        return (url, "image/png", PNG) if "apple-touch-icon.png" in url else None
+
+    monkeypatch.setattr(server, "_icon_http_get", fetch)
+    with monkeypatch.context() as m:
+        _disk_full(m)
+        assert client.get("/api/service-icon/netflix").status_code == 404
+        tried = len(calls)
+        # Nothing on disk says "don't look again", so an in-memory hold does: renders
+        # must not each repeat the whole outbound lookup while the disk refuses.
+        assert client.get("/api/service-icon/netflix").status_code == 404   # no stub served
+        assert len(calls) == tried
+    assert _leftovers(server) == []          # no partial icon, no temp file, no miss marker
+    assert "netflix.png" in caplog.text                  # the operator can see why...
+    assert str(server.SERVICE_ICONS_AUTO) not in caplog.text   # ...by file name only
+
+    now[0] += server.ICON_WRITE_RETRY                    # five minutes later: retried
     res = client.get("/api/service-icon/netflix")
     assert res.status_code == 200 and res.data == PNG
     assert _leftovers(server) == ["netflix.png"]
+
+
+def test_a_failed_miss_marker_write_holds_off_in_memory_not_for_a_day(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    calls = []
+    monkeypatch.setattr(server, "_icon_http_get",
+                        lambda url, accept="*/*", deadline=None, lookup=None: calls.append(url))
+    with monkeypatch.context() as m:
+        _disk_full(m)
+        assert client.get("/api/service-icon/hulu").status_code == 404
+    tried = len(calls)
+    assert _leftovers(server) == []                      # no marker could be written
+    now[0] += server.ICON_WRITE_RETRY - 1
+    assert client.get("/api/service-icon/hulu").status_code == 404
+    assert len(calls) == tried                           # held off in memory
+
+    assert client.delete("/api/service-icon/hulu").status_code == 200   # Refresh Icons
+    assert client.get("/api/service-icon/hulu").status_code == 404
+    assert len(calls) > tried                            # ...retries at once
+    assert server._icon_miss_marker("hulu").exists()     # and records the miss this time
 
 
 def test_parallel_first_requests_share_one_fetch(tmp_path, monkeypatch):
