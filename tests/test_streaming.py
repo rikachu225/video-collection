@@ -424,11 +424,26 @@ def test_embedded_ipv4_is_unwrapped_from_every_tunnel_form(tmp_path, monkeypatch
     server, _ = make_client(tmp_path, monkeypatch)
     v4 = _ip.IPv4Address
     assert server._embedded_ipv4(_ip.ip_address("::ffff:100.64.0.1")) == [v4("100.64.0.1")]
-    assert server._embedded_ipv4(_ip.ip_address("64:ff9b::7f00:1")) == [v4("127.0.0.1")]
-    assert server._embedded_ipv4(_ip.ip_address("64:ff9b:1::a00:1")) == [v4("10.0.0.1")]
     assert server._embedded_ipv4(_ip.ip_address("2002:c0a8:101::1")) == [v4("192.168.1.1")]
     assert server._embedded_ipv4(_ip.ip_address("2606:4700:4700::1111")) == []
     assert server._embedded_ipv4(_ip.ip_address("8.8.8.8")) == []
+
+
+@pytest.mark.parametrize("nat64", [
+    "64:ff9b::808:808",        # well-known prefix -> 8.8.8.8 (public)
+    "64:ff9b:1::808:808",      # local-use prefix  -> 8.8.8.8 (public)
+    "64:ff9b::7f00:1",         # -> 127.0.0.1
+])
+def test_nat64_is_refused_even_when_the_embedded_ipv4_is_public(tmp_path, monkeypatch, nat64):
+    # Policy: NAT64 is never public. Both prefixes also sit in ::/8, which is_reserved
+    # flags today, but the flag tables have changed between Python releases, so the
+    # refusal must not depend on them. Simulate a release that stops flagging ::/8.
+    import ipaddress as _ip
+    server, _ = make_client(tmp_path, monkeypatch)
+    addr = _ip.ip_address(nat64)
+    assert server._is_public_ip(addr) is False
+    monkeypatch.setattr(_ip.IPv6Address, "is_reserved", property(lambda self: False))
+    assert server._is_public_ip(addr) is False
 
 
 def test_teredo_is_refused_when_either_embedded_ipv4_is_private(tmp_path, monkeypatch):

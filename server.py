@@ -1111,14 +1111,26 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-# NAT64 prefixes (RFC 6052 well-known, RFC 8215 local-use): the last 32 bits are the
-# IPv4 host the translator actually connects to.
+# NAT64 prefixes (RFC 6052 well-known, RFC 8215 local-use). Refused outright by
+# _is_public_ip, even when the IPv4 in the last 32 bits is public. Both prefixes also sit
+# inside ::/8, which `is_reserved` flags on every Python measured (3.11, 3.13), but those
+# tables have changed between releases, so the refusal does not lean on them. Cost: on a
+# DNS64/NAT64-only network (no IPv4 route) icons from IPv4-only hosts can't be fetched.
 _NAT64_NETWORKS = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
 
 
 def _embedded_ipv4(ip):
-    """IPv4 addresses an IPv6 address really leads to: IPv4-mapped, 6to4, Teredo
-    (server AND client) and NAT64. Empty for IPv4 and for plain IPv6."""
+    """IPv4 addresses an IPv6 address really leads to: IPv4-mapped, 6to4 and Teredo
+    (server AND client). Empty for IPv4 and for plain IPv6. NAT64 is not unwrapped:
+    _is_public_ip refuses it before this is consulted.
+
+    How much of this the flags in _is_public_ip already cover depends on the Python
+    release, so each form is unwrapped regardless. Measured on 3.11.9: the flags pass
+    6to4 (2002::/16 is_global), so this is what refuses 2002:c0a8:101::1 (192.168.1.1),
+    while is_reserved (::/8) refuses every IPv4-mapped address; on 3.13 the flags refuse
+    6to4 and follow the IPv4 of a mapped one. Teredo (2001::/32) is inside 2001::/23,
+    which both flag is_private, so that branch is defence in depth only.
+    """
     if ip.version != 6:
         return []
     found = []
@@ -1128,8 +1140,6 @@ def _embedded_ipv4(ip):
         found.append(ip.sixtofour)
     if ip.teredo is not None:
         found.extend(ip.teredo)
-    if any(ip in net for net in _NAT64_NETWORKS):
-        found.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
     return found
 
 
@@ -1141,8 +1151,11 @@ def _is_public_ip(ip):
     `is_global` alone is True on some Python versions for addresses that must be
     refused (::ffff:100.64.0.1, 64:ff9b::7f00:1). `is_link_local` is what blocks
     169.254.169.254 (cloud metadata); `is_site_local` covers deprecated fec0::/10.
-    An IPv6 address that embeds an IPv4 one is only public if that IPv4 is too.
+    NAT64 is never public (see _NAT64_NETWORKS). Any other IPv6 address that embeds an
+    IPv4 one is only public if that IPv4 is too.
     """
+    if ip.version == 6 and any(ip in net for net in _NAT64_NETWORKS):
+        return False
     if not ip.is_global:
         return False
     if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
