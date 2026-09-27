@@ -119,7 +119,9 @@
         // workspace" returns both a data change and open_workspace; running the command first
         // would open the workspace on the previous playlist's clips.
         await applyRefresh(res.refresh);
-        for (const cmd of (res.ui_commands || [])) { try { UI[cmd.command] && UI[cmd.command](cmd.args || {}); } catch (e) { console.error(e); } }
+        // Awaited one at a time: some commands are async (open_streaming_service may have to
+        // fetch the service list first), and the order the model issued them must hold.
+        for (const cmd of (res.ui_commands || [])) { try { if (UI[cmd.command]) await UI[cmd.command](cmd.args || {}); } catch (e) { console.error(e); } }
         const trace = (res.ui_commands || []).map((c) => c.command.replace(/_/g, " "));
         addMsg("assistant", res.reply || "Done.", trace);
         history.push({ role: "assistant", text: res.reply || "Done." });

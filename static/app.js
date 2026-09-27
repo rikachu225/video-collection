@@ -170,16 +170,33 @@ const api = {
 };
 
 // ── Toast Notifications ──────────────────────────────────────
-function toast(message, type = "info") {
+// `action` ({label, href}) adds a real link the user can click — for a launch that can't
+// open its own tab (a popup outside a user gesture is blocked). Callers pass a vetted
+// https URL. Action toasts stay long enough to reach, and clicking the link dismisses it.
+function toast(message, type = "info", action = null) {
   const el = document.createElement("div");
   el.className = `toast toast-${type}`;
   el.textContent = message;
+  let link = null;
+  if (action) {
+    link = document.createElement("a");
+    link.className = "toast-action";
+    link.href = action.href;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";   // same reverse-tabnabbing guard as the streaming tiles
+    link.referrerPolicy = "no-referrer";
+    link.textContent = action.label;
+    el.classList.add("has-action");
+    el.appendChild(link);
+  }
   dom.toastContainer.appendChild(el);
   requestAnimationFrame(() => el.classList.add("show"));
-  setTimeout(() => {
+  const dismiss = () => {
     el.classList.remove("show");
     setTimeout(() => el.remove(), 300);
-  }, 2500);
+  };
+  const timer = setTimeout(dismiss, action ? 10000 : 2500);
+  if (link) link.addEventListener("click", () => { clearTimeout(timer); dismiss(); });
 }
 
 // ── Navigation ───────────────────────────────────────────────
@@ -2976,9 +2993,23 @@ function renderStreaming() {
   });
 }
 
-/** Used by the AI assistant ("open Netflix"). Matches on name, then host. */
-function openStreamingService(query) {
+/** Used by the AI assistant ("open Netflix"). Matches on name, then host. Async: only the
+ *  Streaming view and Settings fill state.streamingServices, so on a fresh page load the
+ *  list is still empty and has to be fetched before the name can resolve. */
+async function openStreamingService(query) {
   const q = String(query || "").trim().toLowerCase();
+  // An empty name must match nothing — "".includes() is true for every service, which
+  // would silently launch whichever one happens to be first in the list.
+  if (!q) {
+    toast("No streaming service was named", "error");
+    return false;
+  }
+  if (!state.streamingServices.length) {
+    try {
+      const data = await api.get("/api/streaming");
+      state.streamingServices = data.services || [];
+    } catch { /* falls through to the no-match toast */ }
+  }
   const list = state.streamingServices.filter((s) => isSafeServiceUrl(s.url));
   const svc = list.find((s) => s.name.toLowerCase() === q)
            || list.find((s) => s.id === q)
@@ -2988,8 +3019,16 @@ function openStreamingService(query) {
     toast(`No streaming service matching "${query}"`, "error");
     return false;
   }
-  window.open(svc.url, "_blank", "noopener,noreferrer");
-  toast(`Opening ${svc.name}…`, "success");
+  // Browsers only allow window.open within a few seconds of a click or key press, and this
+  // runs after an LLM round trip. With "noopener" window.open returns null even when it
+  // works, so its result can't reveal a block — ask the browser whether the gesture is still
+  // live instead, and when it isn't, hand the user a real link rather than claim success.
+  if (navigator.userActivation?.isActive) {
+    window.open(svc.url, "_blank", "noopener,noreferrer");
+    toast(`Opening ${svc.name}…`, "success");
+    return true;
+  }
+  toast(`${svc.name} is ready`, "info", { label: `Open ${svc.name}`, href: svc.url });
   return true;
 }
 
