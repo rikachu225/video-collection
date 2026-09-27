@@ -3123,6 +3123,23 @@ async function addStreamingService() {
   }
 }
 
+/** Drop the fetched copies so each icon re-resolves, and bust the browser cache so a
+ *  file you just dropped into data/service_icons/ shows up immediately. */
+async function refreshServiceIcons() {
+  const btn = $("#btn-refresh-icons");
+  btn.disabled = true;
+  try {
+    await Promise.all(state.streamingServices.map((s) =>
+      api.del(`/api/service-icon/${encodeURIComponent(s.id)}`).catch(() => {})));
+    iconBust = String(Date.now());
+    renderStreaming();
+    toast("Icons refreshed", "success");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+$("#btn-refresh-icons").addEventListener("click", refreshServiceIcons);
 $("#btn-add-streaming").addEventListener("click", addStreamingService);
 $("#streaming-url-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") addStreamingService();

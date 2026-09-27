@@ -1,5 +1,9 @@
 # Changelog
 
+## v2.8.2 - 2026-09-27
+### Fixed
+- **Settings → Refresh Icons did nothing.** The button and its `DELETE /api/service-icon/<id>` endpoint shipped, but the click handler (`refreshServiceIcons()`) was lost from `app.js` when a file-sync conflict kept the older copy. Restored verbatim from the conflict copy; `?v=` bumped so browsers that cached the handler-less 2.8.1 script pick it up.
+
 ## v2.8.1 - 2026-07-31
 ### Added
 - **Official app icons on the streaming tiles.** The server resolves each service's icon (standard `apple-touch-icon` paths → the homepage's declared `<link rel="icon">` tags, ranked by their `sizes` attribute → `favicon.ico`), downloads it once, and caches it in `data/service_icons/auto/`. Measured result across the 11 built-ins: **10 resolve**, 8 of them at 144–256px. The size-ranked HTML parse matters — Netflix serves *nothing* at the standard paths (only a `<link>` tag), and it lifted Disney+, Peacock and YouTube well above what their bare favicons would have given.
