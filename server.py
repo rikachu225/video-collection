@@ -12,16 +12,17 @@ import shutil
 import mimetypes
 from datetime import datetime, timezone
 from html.parser import HTMLParser
-from http.client import HTTPException
+from http.client import HTTPException, HTTPSConnection
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
-from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.request import Request, build_opener, HTTPRedirectHandler, HTTPSHandler
 from urllib.error import HTTPError, URLError
 import socket
+import ssl
 import tempfile
 import threading
 import time
-from functools import lru_cache
+from functools import lru_cache, partial
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 
 try:
@@ -1164,6 +1165,122 @@ def _icon_time_left(deadline):
     return float("inf") if deadline is None else deadline - _icon_clock()
 
 
+ICON_MIN_OP_TIMEOUT = 0.01         # never 0: settimeout(0) would mean non-blocking
+
+
+def _icon_op_timeout(deadline):
+    """Socket timeout for the next blocking call of a lookup: ICON_TIMEOUT, cut to the
+    time left. Raises TimeoutError (an OSError) once the deadline has passed."""
+    left = _icon_time_left(deadline)
+    if left <= 0:
+        raise TimeoutError("icon lookup budget spent")
+    return max(ICON_MIN_OP_TIMEOUT, min(ICON_TIMEOUT, left))
+
+
+class _DeadlineSocketMixin:
+    """Re-arms the socket timeout from the lookup deadline before every blocking call.
+
+    A socket timeout applies to ONE call, and http.client reads the status line and
+    headers (and chunk-size lines and trailers inside a single read1()) through many
+    small recv calls — so a server sending one byte per (timeout - epsilon) was never
+    cut off, and the status/header phase had no bound at all. SSLSocket.recv_into,
+    send and do_handshake each bound their whole call by the timeout set when they
+    start, so arming them here bounds TLS too.
+    """
+    _icon_deadline = None
+
+    def _icon_arm(self):
+        self.settimeout(_icon_op_timeout(self._icon_deadline))
+
+    def recv(self, *args, **kwargs):
+        self._icon_arm()
+        return super().recv(*args, **kwargs)
+
+    def recv_into(self, *args, **kwargs):
+        self._icon_arm()
+        return super().recv_into(*args, **kwargs)
+
+    def send(self, *args, **kwargs):
+        self._icon_arm()
+        return super().send(*args, **kwargs)
+
+    def sendall(self, *args, **kwargs):
+        self._icon_arm()
+        return super().sendall(*args, **kwargs)
+
+
+class _DeadlineSocket(_DeadlineSocketMixin, socket.socket):
+    """The TCP phase: connect, and the CONNECT exchange when a proxy is configured."""
+
+
+class _DeadlineSSLSocket(_DeadlineSocketMixin, ssl.SSLSocket):
+    """The TLS phase: handshake, request, status line, headers and body."""
+
+    def do_handshake(self, *args, **kwargs):
+        self._icon_arm()
+        return super().do_handshake(*args, **kwargs)
+
+
+def _icon_connect(address, deadline):
+    """socket.create_connection, but every address shares the lookup deadline instead of
+    each getting a full timeout of its own (a name with many unreachable addresses)."""
+    host, port = address
+    err = OSError(f"no address for {host}")
+    for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, 0,
+                                                                   socket.SOCK_STREAM):
+        timeout = _icon_op_timeout(deadline)          # raises once the budget is spent
+        sock = _DeadlineSocket(family, socktype, proto)
+        try:
+            sock.settimeout(timeout)
+            sock.connect(sockaddr)
+        except OSError as e:
+            sock.close()
+            err = e
+            continue
+        sock._icon_deadline = deadline
+        return sock
+    raise err
+
+
+def _icon_tls_context():
+    """Certificate and hostname verification against the system trust store — what
+    urllib does by default. Tests swap this for a context that trusts a local cert."""
+    ctx = ssl.create_default_context()
+    ctx.set_alpn_protocols(["http/1.1"])
+    return ctx
+
+
+class _DeadlineHTTPSConnection(HTTPSConnection):
+    """HTTPSConnection whose sockets take every timeout from the lookup deadline."""
+
+    def __init__(self, host, *, deadline, context, **kwargs):
+        context.sslsocket_class = _DeadlineSSLSocket
+        super().__init__(host, context=context, **kwargs)
+        self._icon_deadline = deadline
+        self._icon_context = context
+
+    def connect(self):
+        self.sock = _icon_connect((self.host, self.port), self._icon_deadline)
+        if self._tunnel_host:                  # an https proxy (environment / system settings)
+            self._tunnel()
+        tls = self._icon_context.wrap_socket(
+            self.sock, server_hostname=self._tunnel_host or self.host,
+            do_handshake_on_connect=False)
+        tls._icon_deadline = self._icon_deadline
+        self.sock = tls                        # assigned first, so close() reaches it on failure
+        tls.do_handshake()
+
+
+class _DeadlineHTTPSHandler(HTTPSHandler):
+    def __init__(self, deadline):
+        super().__init__()
+        self._icon_deadline = deadline
+
+    def https_open(self, req):
+        return self.do_open(partial(_DeadlineHTTPSConnection, deadline=self._icon_deadline,
+                                    context=_icon_tls_context()), req)
+
+
 def _read_icon_body(resp, deadline):
     """Read at most ICON_MAX_BYTES, checking the deadline between chunks.
 
@@ -1192,11 +1309,14 @@ def _read_icon_body(resp, deadline):
 def _icon_http_get(url, accept="*/*", deadline=None):
     """GET over https with manual redirect handling. Returns (final_url, ctype, body).
 
-    `deadline` (an _icon_clock() value) bounds the whole call, redirects and body
-    included. ICON_TIMEOUT alone is per socket operation, so without it a slow-drip
-    server could hold a worker thread indefinitely.
+    `deadline` (an _icon_clock() value) bounds the whole call on every hop: connect, TLS
+    handshake, request, status line, headers and body (_DeadlineHTTPSConnection gives
+    each blocking socket call only the time left). ICON_TIMEOUT alone is per socket
+    call, so without it a slow-drip server could hold a worker thread indefinitely.
+    Not covered: DNS resolution (getaddrinfo takes no timeout; the OS resolver's own
+    timeout bounds it).
     """
-    opener = build_opener(_NoRedirect)
+    opener = build_opener(_NoRedirect, _DeadlineHTTPSHandler(deadline))
     for _ in range(ICON_MAX_REDIRECTS + 1):
         remaining = _icon_time_left(deadline)
         if remaining <= 0:
