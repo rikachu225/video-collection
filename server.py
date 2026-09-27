@@ -1586,6 +1586,47 @@ def _fetch_service_icon(service, generation=None):
     return None
 
 
+# Served-icon digests, cached per path so an unchanged icon isn't re-read on every tile
+# render: str(path) -> (metadata key, digest). One entry per icon file, so it stays small.
+ICON_DIGEST_SETTLE_NS = 2 * 10**9     # a file changed more recently is hashed on every request
+_icon_wall_ns = time.time_ns          # indirection so tests can drive the settle check
+_icon_digests = {}
+_icon_digests_lock = threading.Lock()
+
+
+def _icon_file_digest(f, path):
+    """sha256 over WHICH file this is (drop-in vs fetched; the extension picks the
+    Content-Type) and every byte of it. Leaves `f` at offset 0."""
+    h = hashlib.sha256(f"{path.parent.name}/{path.name}\0".encode())
+    for chunk in iter(partial(f.read, ICON_READ_CHUNK), b""):
+        h.update(chunk)
+    f.seek(0)
+    return h.hexdigest()[:32]
+
+
+def _icon_etag(f, path, st):
+    """Strong ETag for the open icon file `f` (`st` is its fstat): a digest of the bytes
+    served, so it changes whenever they do.
+
+    The digest is cached under the file's size, mtime, ctime, inode and device, but
+    equal metadata alone never proves equal bytes: Linux stamps files from a coarse
+    kernel clock, so a refetch written within the same tick at the same size (even on
+    the inode just freed) looks identical. So, as git does for its index, a digest is
+    only cached once the file is ICON_DIGEST_SETTLE_NS old; any later write then stamps
+    a newer mtime or ctime than the cached key holds.
+    """
+    key = (st.st_size, st.st_mtime_ns, st.st_ctime_ns, st.st_ino, st.st_dev)
+    with _icon_digests_lock:
+        cached = _icon_digests.get(str(path))
+    if cached is not None and cached[0] == key:
+        return cached[1]
+    digest = _icon_file_digest(f, path)
+    if _icon_wall_ns() - max(st.st_mtime_ns, st.st_ctime_ns) >= ICON_DIGEST_SETTLE_NS:
+        with _icon_digests_lock:
+            _icon_digests[str(path)] = (key, digest)
+    return digest
+
+
 def _icon_lookup_target(service_id):
     """The service an icon may be FETCHED for: configured and enabled. Hiding a service
     is the documented opt-out of its lookup, and an unknown id never gets a lock. A
@@ -1617,17 +1658,25 @@ def service_icon(service_id):
     if path is None:
         return jsonify({"error": "No icon found"}), 404
 
+    # One open file for the digest AND the body: a DELETE or a refetch that replaces the
+    # file meanwhile can neither 500 this request nor pair new bytes with an old ETag.
     try:
-        st = path.stat()
+        f = open(path, "rb")
     except OSError:                          # removed by a DELETE since the lookup
         return jsonify({"error": "No icon found"}), 404
-    # Revalidate on every use instead of caching for a week: a strong ETag over WHICH
-    # file this is (drop-in vs fetched) plus its size and mtime_ns means a refetch or a
-    # newly dropped-in file shows on the next render — no client-side cache-bust — and
-    # an unchanged icon costs one 304.
-    etag = hashlib.sha256(
-        f"{path.parent.name}/{path.name}:{st.st_size}:{st.st_mtime_ns}".encode()).hexdigest()[:32]
-    response = send_file(path, etag=etag)
+    try:
+        st = os.fstat(f.fileno())
+        etag = _icon_etag(f, path, st)
+    except OSError:
+        f.close()
+        return jsonify({"error": "No icon found"}), 404
+    # Revalidate on every use instead of caching for a week: the strong ETag is a digest
+    # of the bytes, so a refetch or a newly dropped-in file shows on the next render — no
+    # client-side cache-bust — and an unchanged icon costs one 304. No Last-Modified: a
+    # one-second date would let If-Modified-Since answer 304 for a same-second refetch.
+    response = send_file(f, download_name=path.name, etag=etag)
+    if response.status_code == 200:
+        response.content_length = st.st_size
     response.headers["Cache-Control"] = "no-cache"
     # A cached icon is a REMOTE body from a user-added https host. An SVG served as
     # image/svg+xml is an active document under direct navigation — script in it would

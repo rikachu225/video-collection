@@ -968,6 +968,10 @@ def test_an_icon_is_revalidated_with_a_strong_etag(tmp_path, monkeypatch):
     assert res.headers["X-Content-Type-Options"] == "nosniff"
     etag = res.headers["ETag"]
     assert etag.startswith('"')                          # strong, not W/"..."
+    assert int(res.headers["Content-Length"]) == len(PNG)
+    # A one-second Last-Modified would let If-Modified-Since answer 304 for a refetch
+    # written within the same second: only the content ETag decides.
+    assert "Last-Modified" not in res.headers
 
     again = client.get("/api/service-icon/netflix", headers={"If-None-Match": etag})
     assert again.status_code == 304 and again.data == b""
@@ -976,16 +980,60 @@ def test_an_icon_is_revalidated_with_a_strong_etag(tmp_path, monkeypatch):
 
 
 def test_a_refreshed_icon_is_served_despite_the_old_etag(tmp_path, monkeypatch):
+    # The refetched icon has the same length AND the same mtime_ns as the old one: Linux
+    # stamps files from a coarse kernel clock, so two writes ~1ms apart often share one.
+    # An ETag built from size + mtime answered 304 here, and the old icon stayed.
+    import os
     server, client = make_client(tmp_path, monkeypatch)
     monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
     old_etag = client.get("/api/service-icon/netflix").headers["ETag"]
+    old = (server.SERVICE_ICONS_AUTO / "netflix.png").stat()
 
-    newer = b"\x89PNG\r\n\x1a\n" + b"y" * 64
+    newer = b"\x89PNG\r\n\x1a\n" + b"y" * 64                  # same length as PNG
+    assert len(newer) == len(PNG)
     monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", newer)}))
+    real_write = server._write_icon_atomically
+
+    def same_clock_tick(target, body):
+        real_write(target, body)
+        os.utime(target, ns=(old.st_atime_ns, old.st_mtime_ns))
+
+    monkeypatch.setattr(server, "_write_icon_atomically", same_clock_tick)
     client.delete("/api/service-icon/netflix")          # Settings > Refresh Icons
     res = client.get("/api/service-icon/netflix", headers={"If-None-Match": old_etag})
+    assert (server.SERVICE_ICONS_AUTO / "netflix.png").stat().st_mtime_ns == old.st_mtime_ns
     assert res.status_code == 200 and res.data == newer
     assert res.headers["ETag"] != old_etag
+
+
+def test_an_icon_digest_is_cached_only_once_the_file_has_settled(tmp_path, monkeypatch):
+    # The ETag hashes the bytes, but an unchanged icon must not be re-read on every tile
+    # render. A file whose timestamps are within a clock tick of "now" could still be
+    # rewritten without its metadata changing, so its digest is never cached.
+    server, client = make_client(tmp_path, monkeypatch)
+    icon = server.SERVICE_ICONS_AUTO / "netflix.png"
+    icon.write_bytes(PNG)
+    st = icon.stat()
+    hashed, real_digest = [], server._icon_file_digest
+    monkeypatch.setattr(server, "_icon_file_digest",
+                        lambda f, path: hashed.append(path.name) or real_digest(f, path))
+    now = [max(st.st_mtime_ns, st.st_ctime_ns)]              # written this very tick
+    monkeypatch.setattr(server, "_icon_wall_ns", lambda: now[0])
+
+    etag = client.get("/api/service-icon/netflix").headers["ETag"]
+    assert client.get("/api/service-icon/netflix").headers["ETag"] == etag
+    assert len(hashed) == 2                                  # too fresh: hashed every time
+
+    now[0] += server.ICON_DIGEST_SETTLE_NS
+    for _ in range(3):
+        res = client.get("/api/service-icon/netflix", headers={"If-None-Match": etag})
+        assert res.status_code == 304
+    assert len(hashed) == 3                                  # settled: hashed once, then cached
+
+    icon.write_bytes(PNG + b"z")                             # changed on disk: new key, re-hashed
+    res = client.get("/api/service-icon/netflix", headers={"If-None-Match": etag})
+    assert res.status_code == 200 and res.data == PNG + b"z"
+    assert res.headers["ETag"] != etag and len(hashed) == 4
 
 
 def test_a_dropped_in_icon_beats_the_old_etag_even_with_identical_size_and_mtime(tmp_path, monkeypatch):
