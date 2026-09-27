@@ -839,6 +839,68 @@ def _service_id_from_name(name):
     return slug[:48] or "service"
 
 
+STREAMING_NAME_MAX = 60
+
+
+def _normalize_service(entry, label="Entry"):
+    """Validate one streaming entry. Returns (service, None) or (None, reason).
+
+    The ONE validator for both directions: POST /api/streaming rejects the whole
+    payload on any reason, _streaming_services() drops the entry. So anything a save
+    accepts survives the next read, and a hand-edited config.json (a numeric name,
+    enabled: "false", ...) can't raise. `id` is None when absent or invalid — POST
+    then derives one (_assign_service_ids), the read path drops the entry.
+    """
+    if not isinstance(entry, dict):
+        return None, f"{label} is not an object"
+    name = entry.get("name")
+    name = _sanitize_label(name, max_length=STREAMING_NAME_MAX) if isinstance(name, str) else ""
+    if not name:
+        return None, f"{label} needs a name"
+    url, err = _validate_service_url(entry.get("url"))
+    if err:
+        return None, f"{name}: {err}"
+    enabled, custom = entry.get("enabled", True), entry.get("custom", False)
+    if not isinstance(enabled, bool) or not isinstance(custom, bool):
+        return None, f"{name}: enabled and custom must be true or false"
+    sid = entry.get("id")
+    sid = sid.strip().lower() if isinstance(sid, str) else ""
+    return {
+        "id": sid if _SERVICE_ID_RE.match(sid) else None,
+        "name": name,
+        "url": url,
+        "accent": _safe_accent(entry.get("accent")),
+        "enabled": enabled,
+        "custom": custom,
+    }, None
+
+
+def _assign_service_ids(services):
+    """Give every entry a unique, valid id, in place, keeping list order.
+
+    Explicit ids are claimed first, so an id-less entry listed before a built-in can't
+    take the built-in's id, and derived ids also steer clear of every shipped default
+    id, so a custom "Netflix" can't silently replace the real one. The de-dup suffix is
+    fitted inside the 48-char id limit — a longer id would be dropped on the next read.
+    """
+    taken, pending = set(), []
+    for svc in services:
+        if svc["id"] and svc["id"] not in taken:
+            taken.add(svc["id"])
+        else:
+            pending.append(svc)
+    taken.update(d["id"] for d in DEFAULT_STREAMING_SERVICES)
+    for svc in pending:
+        base = svc["id"] or _service_id_from_name(svc["name"])
+        sid, n = base, 2
+        while sid in taken:
+            suffix = f"-{n}"
+            sid = base[:48 - len(suffix)] + suffix
+            n += 1
+        taken.add(sid)
+        svc["id"] = sid
+
+
 def _streaming_services():
     """Saved list merged with shipped defaults. The single builder for every read.
 
@@ -847,8 +909,9 @@ def _streaming_services():
     clobbering customisations — and a service the user *hid* stays in the list with
     enabled=False, so it is not resurrected on the next read.
 
-    Entries that fail today's validation are dropped rather than raising: a hand-edited
-    or older config.json must never take the app down.
+    Entries that fail today's validation (_normalize_service, the same check POST
+    applies) are dropped rather than raising: a hand-edited or older config.json must
+    never take the app down.
     """
     saved = _load_config().get("streamingServices")
     if not isinstance(saved, list):
@@ -856,23 +919,11 @@ def _streaming_services():
 
     by_id, order = {}, []
     for entry in saved:
-        if not isinstance(entry, dict):
+        svc, err = _normalize_service(entry)
+        if err or svc["id"] is None or svc["id"] in by_id:
             continue
-        sid = str(entry.get("id") or "").strip().lower()
-        if not _SERVICE_ID_RE.match(sid) or sid in by_id:
-            continue
-        url, err = _validate_service_url(entry.get("url"))
-        if err:
-            continue
-        by_id[sid] = {
-            "id": sid,
-            "name": _sanitize_label(entry.get("name")) or sid,
-            "url": url,
-            "accent": _safe_accent(entry.get("accent")),
-            "enabled": bool(entry.get("enabled", True)),
-            "custom": bool(entry.get("custom", False)),
-        }
-        order.append(sid)
+        by_id[svc["id"]] = svc
+        order.append(svc["id"])
 
     for default in DEFAULT_STREAMING_SERVICES:
         if default["id"] not in by_id:
@@ -1263,41 +1314,24 @@ def save_streaming():
     Rejects the entire payload if any entry is invalid — partial saves would silently
     drop something the user just typed.
     """
-    payload = request.get_json(silent=True) or {}
+    payload = request.get_json(silent=True)
+    if payload is None:
+        payload = {}
+    if not isinstance(payload, dict):
+        return jsonify({"error": "Expected a JSON object"}), 400
     incoming = payload.get("services")
     if not isinstance(incoming, list):
         return jsonify({"error": "services must be a list"}), 400
     if len(incoming) > STREAMING_MAX_SERVICES:
         return jsonify({"error": f"Too many services (max {STREAMING_MAX_SERVICES})"}), 400
 
-    cleaned, seen = [], set()
+    cleaned = []
     for i, entry in enumerate(incoming):
-        if not isinstance(entry, dict):
-            return jsonify({"error": f"Entry {i + 1} is not an object"}), 400
-        name = _sanitize_label(entry.get("name"), max_length=60)
-        if not name:
-            return jsonify({"error": f"Entry {i + 1} needs a name"}), 400
-        url, err = _validate_service_url(entry.get("url"))
+        svc, err = _normalize_service(entry, label=f"Entry {i + 1}")
         if err:
-            return jsonify({"error": f"{name}: {err}"}), 400
-
-        sid = str(entry.get("id") or "").strip().lower()
-        if not _SERVICE_ID_RE.match(sid):
-            sid = _service_id_from_name(name)
-        base, n = sid, 2
-        while sid in seen:
-            sid = f"{base}-{n}"
-            n += 1
-        seen.add(sid)
-
-        cleaned.append({
-            "id": sid,
-            "name": name,
-            "url": url,
-            "accent": _safe_accent(entry.get("accent")),
-            "enabled": bool(entry.get("enabled", True)),
-            "custom": bool(entry.get("custom", False)),
-        })
+            return jsonify({"error": err}), 400
+        cleaned.append(svc)
+    _assign_service_ids(cleaned)
 
     config = _load_config()
     config["streamingServices"] = cleaned

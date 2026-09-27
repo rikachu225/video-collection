@@ -275,6 +275,105 @@ def test_streaming_key_of_the_wrong_type_falls_back_to_defaults(tmp_path, monkey
     assert len(_get(client)) == len(server.DEFAULT_STREAMING_SERVICES)
 
 
+def test_wrongly_typed_fields_in_config_are_dropped_not_fatal(tmp_path, monkeypatch):
+    # Each of these used to raise inside GET /api/streaming (a 500) or be coerced
+    # (enabled: "false" read as True).
+    server, client = make_client(tmp_path, monkeypatch)
+    ok = {"id": "fine", "name": "Fine", "url": "https://fine.example.com"}
+    (tmp_path / "config.json").write_text(json.dumps({
+        "mediaPaths": [],
+        "streamingServices": [
+            dict(ok, id="num-name", name=42),
+            dict(ok, id="bool-name", name=True),
+            dict(ok, id="list-name", name=["x"]),
+            dict(ok, id="num-url", url=42),
+            dict(ok, id=12345),
+            dict(ok, id="str-enabled", enabled="false"),
+            dict(ok, id="str-custom", custom="yes"),
+            dict(ok, id="null-enabled", enabled=None),
+            ok,
+        ],
+    }), encoding="utf-8")
+    res = client.get("/api/streaming")
+    assert res.status_code == 200
+    ids = [s["id"] for s in res.get_json()["services"]]
+    assert ids[0] == "fine"
+    for dropped in ("num-name", "bool-name", "list-name", "num-url", "12345",
+                    "str-enabled", "str-custom", "null-enabled"):
+        assert dropped not in ids
+    assert "netflix" in ids
+    # the icon route resolves services through the same builder
+    assert client.get("/api/service-icon/num-name").status_code == 404
+
+
+def test_a_hand_edited_config_cannot_blank_the_assistant_prompt(tmp_path, monkeypatch):
+    make_client(tmp_path, monkeypatch)
+    (tmp_path / "config.json").write_text(json.dumps({
+        "mediaPaths": [],
+        "streamingServices": [{"id": "x", "name": 42, "url": "https://x.example.com"}],
+    }), encoding="utf-8")
+    import ai_agent
+    importlib.reload(ai_agent)
+    prompt = ai_agent.build_system_prompt({"theaterClips": [], "currentVideos": []})
+    assert "Netflix" in prompt and "open_streaming_service" in prompt
+
+
+@pytest.mark.parametrize("body", [["netflix"], "netflix", 5, True])
+def test_a_non_object_body_is_a_400_not_a_500(tmp_path, monkeypatch, body):
+    _, client = make_client(tmp_path, monkeypatch)
+    assert client.post("/api/streaming", json=body).status_code == 400
+
+
+def test_a_malformed_json_body_is_a_400(tmp_path, monkeypatch):
+    _, client = make_client(tmp_path, monkeypatch)
+    res = client.post("/api/streaming", data="{not json", content_type="application/json")
+    assert res.status_code == 400
+
+
+@pytest.mark.parametrize("field,value", [
+    ("name", 42), ("name", True), ("name", None), ("name", ["Netflix"]),
+    ("enabled", "false"), ("enabled", 0), ("enabled", None), ("custom", "yes"),
+])
+def test_wrongly_typed_fields_are_rejected_on_save(tmp_path, monkeypatch, field, value):
+    _, client = make_client(tmp_path, monkeypatch)
+    entry = {"name": "Fine", "url": "https://fine.example.com", field: value}
+    assert _post(client, [entry]).status_code == 400
+
+
+def test_everything_a_save_accepts_survives_the_next_read(tmp_path, monkeypatch):
+    # Two 55-char names used to de-dup to a 50-char id that the read path then dropped.
+    server, client = make_client(tmp_path, monkeypatch)
+    long_name = "A" * 55
+    posted = [{"name": long_name, "url": "https://a.example.com", "custom": True},
+              {"name": long_name, "url": "https://b.example.com", "custom": True},
+              {"name": long_name, "url": "https://c.example.com", "custom": True},
+              {"name": "N" * 80, "url": "https://d.example.com", "custom": True}]
+    res = _post(client, posted)
+    assert res.status_code == 200
+    saved = [s for s in res.get_json()["services"] if s["custom"]]
+    assert [s["url"] for s in saved] == [p["url"] for p in posted]
+    assert all(server._SERVICE_ID_RE.match(s["id"]) for s in saved)
+    assert len({s["id"] for s in saved}) == 4
+    assert [s for s in _get(client) if s["custom"]] == saved
+
+
+def test_an_id_less_custom_entry_cannot_take_a_builtin_id(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    default_netflix = next(d for d in server.DEFAULT_STREAMING_SERVICES if d["id"] == "netflix")
+    # listed BEFORE the built-in it collides with
+    _post(client, [{"name": "Netflix", "url": "https://my-own.example.com", "custom": True},
+                   dict(default_netflix)])
+    services = _by_id(_get(client))
+    assert services["netflix"]["url"] == default_netflix["url"]
+    assert services["netflix-2"]["url"] == "https://my-own.example.com"
+
+    # and on its own, it still doesn't replace the shipped default
+    _post(client, [{"name": "Netflix", "url": "https://my-own.example.com", "custom": True}])
+    services = _by_id(_get(client))
+    assert services["netflix"]["url"] == default_netflix["url"]
+    assert services["netflix-2"]["custom"] is True
+
+
 # ── Service icons: SSRF guard ──
 @pytest.mark.parametrize("bad", [
     "127.0.0.1",            # loopback
