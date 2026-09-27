@@ -3015,9 +3015,18 @@ async function persistStreaming(rerenderSettings = false) {
   return true;
 }
 
-function moveStreaming(from, to) {
+/** Look a row's service up by id at event time. Every successful persist swaps in fresh
+ *  objects from the server response, so the `svc` a row was rendered from goes stale after
+ *  the first save — editing it would change nothing that gets posted. */
+function currentStreamingService(id) {
+  return state.streamingServices.find((s) => s.id === id) || null;
+}
+
+function moveStreaming(id, delta) {
   const list = state.streamingServices;
-  if (to < 0 || to >= list.length) return;
+  const from = list.findIndex((s) => s.id === id);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= list.length) return;
   [list[from], list[to]] = [list[to], list[from]];
   persistStreaming(true);
 }
@@ -3046,14 +3055,16 @@ function renderStreamingSettings() {
     urlInput.value = svc.url;
     urlInput.spellcheck = false;
     urlInput.addEventListener("change", async () => {
+      const cur = currentStreamingService(svc.id);
+      if (!cur) return;
       const next = urlInput.value.trim();
-      if (next === svc.url) return;
+      if (next === cur.url) return;
       if (!isSafeServiceUrl(next)) {
         toast("Only https:// links are allowed", "error");
-        urlInput.value = svc.url;
+        urlInput.value = cur.url;
         return;
       }
-      svc.url = next;
+      cur.url = next;
       await persistStreaming();
     });
     info.append(label, urlInput);
@@ -3061,8 +3072,8 @@ function renderStreamingSettings() {
     const move = document.createElement("div");
     move.className = "streaming-move";
     move.append(
-      makeMoveBtn("M18 15l-6-6-6 6", i > 0, () => moveStreaming(i, i - 1), "Move up"),
-      makeMoveBtn("M6 9l6 6 6-6", i < state.streamingServices.length - 1, () => moveStreaming(i, i + 1), "Move down"),
+      makeMoveBtn("M18 15l-6-6-6 6", i > 0, () => moveStreaming(svc.id, -1), "Move up"),
+      makeMoveBtn("M6 9l6 6 6-6", i < state.streamingServices.length - 1, () => moveStreaming(svc.id, 1), "Move down"),
     );
 
     const toggle = document.createElement("input");
@@ -3070,8 +3081,10 @@ function renderStreamingSettings() {
     toggle.checked = svc.enabled;
     toggle.title = "Show this tile";
     toggle.addEventListener("change", () => {
-      svc.enabled = toggle.checked;
-      row.classList.toggle("is-off", !svc.enabled);
+      const cur = currentStreamingService(svc.id);
+      if (!cur) return;
+      cur.enabled = toggle.checked;
+      row.classList.toggle("is-off", !cur.enabled);
       persistStreaming();
     });
 
@@ -3085,7 +3098,7 @@ function renderStreamingSettings() {
       del.title = "Remove";
       del.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
       del.addEventListener("click", async () => {
-        state.streamingServices = state.streamingServices.filter((s) => s !== svc);
+        state.streamingServices = state.streamingServices.filter((s) => s.id !== svc.id);
         if (await persistStreaming(true)) toast(`Removed "${svc.name}"`, "info");
       });
       row.appendChild(del);
