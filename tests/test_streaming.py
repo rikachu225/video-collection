@@ -1433,6 +1433,43 @@ def test_a_file_a_repoint_could_not_remove_is_never_used_for_the_new_site(tmp_pa
     assert len(calls) == tried                           # and cached like any other
 
 
+@pytest.mark.parametrize("new_site", ["svg-icon", "no-icon"])
+def test_a_leftover_the_repoint_could_not_remove_is_gone_once_the_lock_is(tmp_path, monkeypatch,
+                                                                          new_site):
+    # The stale mark lives in memory. If a.example's news.png outlived it, a restart
+    # would serve it for b.example again: .png outranks the new site's .svg, and with
+    # no icon at b.example nothing would ever replace it. The lookup that commits
+    # b.example's result retries the delete, which works once the lock has gone.
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com"})
+    old = server.SERVICE_ICONS_AUTO / "news.png"
+    old.write_bytes(PNG)
+    with monkeypatch.context() as m:
+        _lock_fetched_icons(server, m)
+        assert _save_customs(client, {"id": "news", "name": "News",
+                                      "url": "https://b.example.com"}).status_code == 200
+    assert old.exists()                                  # the unlink failed
+
+    svg = b'<svg xmlns="http://www.w3.org/2000/svg"/>'
+    icons = {"apple-touch-icon.png": ("image/svg+xml", svg)} if new_site == "svg-icon" else {}
+    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch(icons))
+    res = client.get("/api/service-icon/news")
+    assert not old.exists()                              # swept once the lock was released
+    if new_site == "svg-icon":
+        assert res.status_code == 200 and res.data == svg
+        assert _leftovers(server) == ["news.svg"]
+    else:
+        assert res.status_code == 404
+        assert _leftovers(server) == ["news.miss"]
+
+    server._icon_stale.clear()                           # what a restart forgets
+    res = client.get("/api/service-icon/news")
+    if new_site == "svg-icon":
+        assert res.status_code == 200 and res.data == svg
+    else:
+        assert res.status_code == 404
+
+
 def test_a_locked_icon_after_refresh_is_not_served_while_its_replacement_cant_be_written(
         tmp_path, monkeypatch):
     # Refresh Icons while the old file is held open: until a new copy can replace it,

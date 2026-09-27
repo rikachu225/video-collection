@@ -1642,6 +1642,19 @@ def _discard_icon_file(path):
     return True
 
 
+def _sweep_stale_icons(service_id, keep):
+    """Retry removing this id's stale fetched files once a lookup has committed its
+    result: the lock that kept a clear from deleting them has usually gone by then.
+    Otherwise a leftover of another type (the old site's .png, the new site's .svg)
+    outlives the in-memory mark and, after a restart, outranks the file just written.
+    Call under _icon_commit_lock, like every write, so it can never delete a file that
+    a concurrent lookup has just made current."""
+    for ext in _ICON_EXTS + (".miss",):
+        path = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
+        if path != keep and path in _icon_stale:
+            _discard_icon_file(path)
+
+
 def _clear_fetched_icon(service_id):
     """Remove the fetched copy and the miss marker. Never the user's drop-in.
 
@@ -1785,6 +1798,7 @@ def _fetch_service_icon(service, generation=None):
                 if not current:
                     return None            # re-pointed or refreshed meanwhile: stale result
                 _write_icon_atomically(target, body)
+                _sweep_stale_icons(service_id, keep=target)
         except OSError as e:
             _icon_write_failed(service_id, target.name, e)
             return None
@@ -1800,6 +1814,7 @@ def _fetch_service_icon(service, generation=None):
                 _write_icon_atomically(marker, _ICON_TIMEOUT_MISS if timed_out else b"")
             except OSError as e:
                 _icon_write_failed(service_id, marker.name, e)
+            _sweep_stale_icons(service_id, keep=marker)
     return None
 
 
