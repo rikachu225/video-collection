@@ -12,11 +12,13 @@ import shutil
 import mimetypes
 from datetime import datetime, timezone
 from html.parser import HTMLParser
+from http.client import HTTPException
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 import socket
+import time
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 from flask_cors import CORS
 
@@ -890,8 +892,12 @@ SERVICE_ICONS_AUTO.mkdir(parents=True, exist_ok=True)
 
 ICON_MAX_BYTES = 2 * 1024 * 1024
 ICON_MAX_REDIRECTS = 4
-ICON_TIMEOUT = 12
+ICON_TIMEOUT = 12                  # per socket operation (connect / one read)
+ICON_BUDGET = 20                   # wall-clock seconds for one whole lookup, all hops
+ICON_MAX_CANDIDATES = 8            # icon URLs tried per lookup (favicon.ico always kept)
+ICON_READ_CHUNK = 64 * 1024
 ICON_MISS_TTL = 24 * 3600          # don't retry a failed lookup for a day
+_icon_clock = time.monotonic       # indirection so tests can drive the budget
 _ICON_UA = "Mozilla/5.0 (compatible; VideoCollection/2.8; +local)"
 _ICON_TYPES = {
     "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
@@ -1038,10 +1044,47 @@ def _host_is_public(hostname):
     return True
 
 
-def _icon_http_get(url, accept="*/*"):
-    """GET over https with manual redirect handling. Returns (final_url, ctype, body)."""
+def _icon_time_left(deadline):
+    return float("inf") if deadline is None else deadline - _icon_clock()
+
+
+def _read_icon_body(resp, deadline):
+    """Read at most ICON_MAX_BYTES, checking the deadline between chunks.
+
+    read1() returns after a single socket read, so a server dripping one byte at a time
+    is noticed; a plain read(n) keeps waiting until n bytes arrive. None = over budget,
+    over size, or truncated.
+    """
+    read = getattr(resp, "read1", None) or resp.read
+    chunks, total = [], 0
+    while True:
+        if _icon_time_left(deadline) <= 0:
+            return None
+        chunk = read(min(ICON_READ_CHUNK, ICON_MAX_BYTES + 1 - total))
+        if not chunk:
+            # http.client returns a short body silently when the connection drops before
+            # Content-Length is satisfied; `length` is what was still owed.
+            if getattr(resp, "length", None):
+                return None
+            return b"".join(chunks)
+        chunks.append(chunk)
+        total += len(chunk)
+        if total > ICON_MAX_BYTES:
+            return None
+
+
+def _icon_http_get(url, accept="*/*", deadline=None):
+    """GET over https with manual redirect handling. Returns (final_url, ctype, body).
+
+    `deadline` (an _icon_clock() value) bounds the whole call, redirects and body
+    included. ICON_TIMEOUT alone is per socket operation, so without it a slow-drip
+    server could hold a worker thread indefinitely.
+    """
     opener = build_opener(_NoRedirect)
     for _ in range(ICON_MAX_REDIRECTS + 1):
+        remaining = _icon_time_left(deadline)
+        if remaining <= 0:
+            return None
         parsed = urlparse(url)
         if parsed.scheme != "https" or not parsed.hostname:
             return None
@@ -1049,7 +1092,7 @@ def _icon_http_get(url, accept="*/*"):
             return None
         req = Request(url, headers={"User-Agent": _ICON_UA, "Accept": accept})
         try:
-            resp = opener.open(req, timeout=ICON_TIMEOUT)
+            resp = opener.open(req, timeout=min(ICON_TIMEOUT, remaining))
         except HTTPError as e:
             if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
                 url = urljoin(url, e.headers["Location"])
@@ -1059,21 +1102,25 @@ def _icon_http_get(url, accept="*/*"):
             return None
         try:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
-            body = resp.read(ICON_MAX_BYTES + 1)
+            body = _read_icon_body(resp, deadline)
+        except (OSError, ValueError, HTTPException):   # timeout / reset / truncated body
+            return None
         finally:
             resp.close()
-        if len(body) > ICON_MAX_BYTES or not body:
+        if not body:
             return None
         return url, ctype, body
     return None
 
 
-def _icon_candidates(service_url):
-    """Icon URLs to try, best-declared-quality first.
+def _icon_candidates(service_url, deadline=None):
+    """Icon URLs to try, best-declared-quality first. At most ICON_MAX_CANDIDATES.
 
     Standard apple-touch paths are tried before a bare favicon, and anything the page
     declares with a `sizes` attribute is ranked by that number — which is how Netflix
     (nothing at the standard paths) and Peacock (only 32px, but declared) resolve at all.
+    The cap keeps /favicon.ico as the last resort, so a page declaring hundreds of icons
+    can't turn one lookup into hundreds of third-party requests.
     """
     parsed = urlparse(service_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
@@ -1082,7 +1129,7 @@ def _icon_candidates(service_url):
         (149, origin + "/apple-touch-icon-precomposed.png"),
     ]
 
-    page = _icon_http_get(origin + "/", accept="text/html,*/*")
+    page = _icon_http_get(origin + "/", accept="text/html,*/*", deadline=deadline)
     if page and page[1].startswith("text/html"):
         html = page[2].decode("utf-8", "ignore")[:400_000]
         for rank, href in _icon_links(html):
@@ -1091,13 +1138,17 @@ def _icon_candidates(service_url):
             except ValueError:
                 continue
 
-    ranked.append((1, origin + "/favicon.ico"))
-
+    favicon = origin + "/favicon.ico"
     seen, ordered = set(), []
     for _, url in sorted(ranked, key=lambda x: -x[0]):
-        if url not in seen:
+        # data:/http: hrefs would be refused by the fetcher anyway; don't let them
+        # use up the candidate budget.
+        if url not in seen and url.lower().startswith("https://"):
             seen.add(url)
             ordered.append(url)
+    ordered = ordered[:ICON_MAX_CANDIDATES - 1]
+    if favicon not in ordered:
+        ordered.append(favicon)
     return ordered
 
 
@@ -1116,7 +1167,11 @@ def _icon_miss_marker(service_id):
 
 
 def _fetch_service_icon(service):
-    """Resolve, download and cache one service's icon. Returns the cached Path or None."""
+    """Resolve, download and cache one service's icon. Returns the cached Path or None.
+
+    The whole lookup — homepage, every candidate, every redirect — shares one
+    ICON_BUDGET deadline. Running out counts as a miss (negative-cached like any other).
+    """
     service_id = service["id"]
     marker = _icon_miss_marker(service_id)
     if marker.exists():
@@ -1126,8 +1181,11 @@ def _fetch_service_icon(service):
         except OSError:
             pass
 
-    for url in _icon_candidates(service["url"]):
-        got = _icon_http_get(url, accept="image/*,*/*")
+    deadline = _icon_clock() + ICON_BUDGET
+    for url in _icon_candidates(service["url"], deadline=deadline):
+        if _icon_time_left(deadline) <= 0:
+            break
+        got = _icon_http_get(url, accept="image/*,*/*", deadline=deadline)
         if not got:
             continue
         _, ctype, body = got

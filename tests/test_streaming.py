@@ -5,8 +5,12 @@ X-Frame-Options: DENY, Max sends frame-ancestors 'none', and DRM binds licences 
 the service's own origin regardless). The security surface is therefore the URL
 itself, which lands in an anchor href in our own origin.
 """
-import json
+import http.client
 import importlib
+import io
+import json
+import socket
+import urllib.request
 
 import pytest
 
@@ -362,10 +366,244 @@ def test_icon_fetch_refuses_non_https_and_private_hosts(tmp_path, monkeypatch):
     assert server._icon_http_get("https://127.0.0.1/x.png") is None
 
 
+# ── Service icons: the real fetch path, driven by a fake network ──
+# Only the transport is fake: socket.getaddrinfo answers from FAKE_DNS, and the opener
+# the code builds is the REAL urllib chain (with whatever handlers the code passes, i.e.
+# _NoRedirect) whose http/https transport is swapped for canned bytes. So dropping
+# _NoRedirect in favour of urllib's own redirect following fails these tests.
+FAKE_DNS = {
+    "public.example": ["93.184.216.34"],
+    "cdn.example": ["93.184.216.35"],
+    "internal.example": ["10.0.0.5"],
+    "tailnet.example": ["100.101.102.103"],
+    "split.example": ["93.184.216.36", "192.168.1.10"],   # one public, one private
+}
+
+
+class _Wire(io.BytesIO):
+    """Socket file for http.client; `on_read` makes every body read slow and 1 byte."""
+    def __init__(self, data, on_read=None):
+        super().__init__(data)
+        self._on_read = on_read
+
+    def read1(self, n=-1):
+        if self._on_read:
+            self._on_read()
+            n = 1
+        return super().read1(n)
+
+
+class _FakeTransport(urllib.request.HTTPSHandler):
+    """routes: {url: ("redirect", code, location) | ("ok", ctype, body[, on_read])}"""
+    handler_order = 100                       # ahead of the stock HTTP handler too
+
+    def __init__(self, routes, opened):
+        super().__init__()
+        self.routes, self.opened = routes, opened
+
+    def https_open(self, req):
+        url = req.full_url
+        self.opened.append((url, req.timeout))
+        route = self.routes.get(url, ("status", 404))
+        on_read = None
+        if route[0] == "redirect":
+            head, body = f"HTTP/1.1 {route[1]} Moved\r\nLocation: {route[2]}\r\n", b""
+        elif route[0] == "ok":
+            head, body = f"HTTP/1.1 200 OK\r\nContent-Type: {route[1]}\r\n", route[2]
+            on_read = route[3] if len(route) > 3 else None
+        else:
+            head, body = f"HTTP/1.1 {route[1]} Nope\r\n", b""
+        wire = (head + f"Content-Length: {len(body)}\r\n\r\n").encode() + body
+
+        class _Sock:
+            def makefile(self, mode):
+                return _Wire(wire, on_read)
+
+        resp = http.client.HTTPResponse(_Sock(), method=req.get_method())
+        resp.begin()
+        resp.url, resp.msg = url, resp.reason     # what AbstractHTTPHandler.do_open sets
+        return resp
+
+    http_open = https_open
+
+
+def _fake_network(server, monkeypatch, routes):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        if host not in FAKE_DNS:
+            raise socket.gaierror("unknown host")
+        return [(2, 1, 6, "", (ip, 0)) for ip in FAKE_DNS[host]]
+
+    opened = []
+    real_build_opener = urllib.request.build_opener
+    monkeypatch.setattr(server.socket, "getaddrinfo", fake_getaddrinfo)
+    monkeypatch.setattr(server, "build_opener",
+                        lambda *handlers: real_build_opener(*handlers, _FakeTransport(routes, opened)))
+    return opened
+
+
+def _fake_clock(server, monkeypatch, start=1000.0):
+    now = [start]
+    monkeypatch.setattr(server, "_icon_clock", lambda: now[0])
+    return now
+
+
+@pytest.mark.parametrize("target", [
+    "https://127.0.0.1/x.png",
+    "https://internal.example/x.png",       # name -> RFC1918
+    "https://tailnet.example/x.png",        # name -> CGNAT (Tailscale)
+    "https://split.example/x.png",          # one public + one private A record
+    "http://cdn.example/x.png",             # https -> http downgrade
+])
+def test_a_redirect_is_rechecked_before_it_is_followed(tmp_path, monkeypatch, target):
+    server, _ = make_client(tmp_path, monkeypatch)
+    opened = _fake_network(server, monkeypatch, {
+        "https://public.example/icon.png": ("redirect", 302, target),
+        target: ("ok", "image/png", PNG),
+    })
+    assert server._icon_http_get("https://public.example/icon.png") is None
+    assert [u for u, _ in opened] == ["https://public.example/icon.png"]
+
+
+def test_a_redirect_to_another_public_https_host_is_followed(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    _fake_network(server, monkeypatch, {
+        "https://public.example/icon.png": ("redirect", 301, "https://cdn.example/i.png"),
+        "https://cdn.example/i.png": ("ok", "image/png", PNG),
+    })
+    assert server._icon_http_get("https://public.example/icon.png") == \
+        ("https://cdn.example/i.png", "image/png", PNG)
+
+
+def test_the_redirect_chain_is_capped(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    hops = server.ICON_MAX_REDIRECTS + 2
+    routes = {f"https://public.example/{n}": ("redirect", 302, f"/{n + 1}") for n in range(hops)}
+    routes[f"https://public.example/{hops}"] = ("ok", "image/png", PNG)
+    opened = _fake_network(server, monkeypatch, routes)
+    assert server._icon_http_get("https://public.example/0") is None
+    assert len(opened) == server.ICON_MAX_REDIRECTS + 1
+
+
+def test_a_body_over_the_size_cap_is_refused(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    _fake_network(server, monkeypatch, {
+        "https://public.example/exact.png": ("ok", "image/png", b"x" * server.ICON_MAX_BYTES),
+        "https://public.example/over.png": ("ok", "image/png", b"x" * (server.ICON_MAX_BYTES + 1)),
+    })
+    got = server._icon_http_get("https://public.example/exact.png")
+    assert got is not None and len(got[2]) == server.ICON_MAX_BYTES
+    assert server._icon_http_get("https://public.example/over.png") is None
+
+
+def test_a_slow_drip_body_is_abandoned_at_the_deadline(tmp_path, monkeypatch):
+    # Each read returns one byte "5 seconds" later: never trips a per-read socket
+    # timeout, so only the overall deadline can stop it.
+    server, _ = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    reads = []
+
+    def tick():
+        reads.append(1)
+        now[0] += 5
+
+    _fake_network(server, monkeypatch, {
+        "https://public.example/drip.png": ("ok", "image/png", b"x" * 10_000, tick),
+    })
+    assert server._icon_http_get("https://public.example/drip.png",
+                                 deadline=now[0] + server.ICON_BUDGET) is None
+    assert len(reads) <= server.ICON_BUDGET // 5 + 1
+
+
+@pytest.mark.parametrize("raw", [
+    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: %d\r\n\r\n",
+    b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nTransfer-Encoding: chunked\r\n\r\n",
+])
+def test_a_real_http_response_is_read_to_the_end(tmp_path, monkeypatch, raw):
+    # _read_icon_body relies on read1(); pin it against the stdlib response class
+    # (over an in-memory socket) for both body framings.
+    server, _ = make_client(tmp_path, monkeypatch)
+    body = PNG * 3000                                  # > one ICON_READ_CHUNK
+    if b"chunked" in raw:
+        wire = raw + b"".join(b"%x\r\n%s\r\n" % (len(body[i:i + 5000]), body[i:i + 5000])
+                              for i in range(0, len(body), 5000)) + b"0\r\n\r\n"
+    else:
+        wire = (raw % len(body)) + body
+
+    class _Sock:
+        def makefile(self, mode):
+            return io.BytesIO(wire)
+
+    resp = http.client.HTTPResponse(_Sock())
+    resp.begin()
+    assert server._read_icon_body(resp, None) == body
+
+
+def test_a_truncated_body_is_refused_not_cached_half_written(tmp_path, monkeypatch):
+    # The connection drops after 72 of 1000 promised bytes. http.client hands back the
+    # short body without raising, so the reader must check what was still owed.
+    server, _ = make_client(tmp_path, monkeypatch)
+    wire = b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 1000\r\n\r\n" + PNG
+
+    class _Sock:
+        def makefile(self, mode):
+            return io.BytesIO(wire)
+
+    resp = http.client.HTTPResponse(_Sock())
+    resp.begin()
+    assert server._read_icon_body(resp, None) is None
+
+
+def test_the_socket_timeout_never_exceeds_the_remaining_budget(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    opened = _fake_network(server, monkeypatch, {
+        "https://public.example/i.png": ("ok", "image/png", PNG),
+    })
+    assert server._icon_http_get("https://public.example/i.png", deadline=now[0] + 3)[2] == PNG
+    assert opened[0][1] <= 3
+    assert server._icon_http_get("https://public.example/i.png", deadline=now[0] - 1) is None
+    assert len(opened) == 1          # an expired deadline never opens a connection
+
+
+def test_one_lookup_tries_a_bounded_number_of_candidates(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    page = "".join(f'<link rel="icon" href="https://host{n}.example/i.png">'
+                   for n in range(500)).encode()
+    calls = []
+
+    def fake(url, accept="*/*", deadline=None):
+        calls.append(url)
+        return (url, "text/html", page) if url == "https://www.netflix.com/" else None
+
+    monkeypatch.setattr(server, "_icon_http_get", fake)
+    assert server._fetch_service_icon({"id": "netflix", "url": "https://www.netflix.com/browse"}) is None
+    icon_calls = calls[1:]                   # calls[0] is the homepage
+    assert len(icon_calls) == server.ICON_MAX_CANDIDATES
+    assert icon_calls[-1] == "https://www.netflix.com/favicon.ico"   # last resort survives
+    assert server._icon_miss_marker("netflix").exists()
+
+
+def test_one_lookup_stops_when_the_overall_budget_is_spent(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    calls = []
+
+    def slow(url, accept="*/*", deadline=None):
+        assert deadline is not None and deadline <= 1000.0 + server.ICON_BUDGET
+        calls.append(url)
+        now[0] += 7                          # every hop burns 7 "seconds"
+        return None
+
+    monkeypatch.setattr(server, "_icon_http_get", slow)
+    assert server._fetch_service_icon({"id": "hulu", "url": "https://www.hulu.com/hub"}) is None
+    assert len(calls) == 3                   # 0s, 7s, 14s start; 21s is past the 20s budget
+    assert server._icon_miss_marker("hulu").exists()
+
+
 # ── Service icons: caching, overrides, content types ──
 def _fake_fetch(mapping):
     """Stub for _icon_http_get: {url_substring: (ctype, body)}."""
-    def inner(url, accept="*/*"):
+    def inner(url, accept="*/*", deadline=None):
         for key, (ctype, body) in mapping.items():
             if key in url:
                 return (url, ctype, body)
@@ -392,7 +630,7 @@ def test_icon_is_fetched_and_cached_then_served_from_disk(tmp_path, monkeypatch)
     server, client = make_client(tmp_path, monkeypatch)
     calls = []
 
-    def counting(url, accept="*/*"):
+    def counting(url, accept="*/*", deadline=None):
         calls.append(url)
         return (url, "image/png", PNG) if "apple-touch-icon.png" in url else None
 
@@ -426,7 +664,7 @@ def test_a_failed_lookup_is_negatively_cached(tmp_path, monkeypatch):
     server, client = make_client(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(server, "_icon_http_get",
-                        lambda url, accept="*/*": calls.append(url) or None)
+                        lambda url, accept="*/*", deadline=None: calls.append(url) or None)
     assert client.get("/api/service-icon/netflix").status_code == 404
     assert server._icon_miss_marker("netflix").exists()
     first = len(calls)
