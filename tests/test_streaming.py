@@ -641,6 +641,24 @@ def test_a_malformed_response_head_is_a_miss_not_a_500(tmp_path, monkeypatch, he
     assert len(opened) == tried                # negatively cached like any other miss
 
 
+@pytest.mark.parametrize("code", [302, 308])
+def test_an_unparseable_redirect_location_is_a_miss_not_a_500(tmp_path, monkeypatch, code):
+    # Python 3.10 has no http_error_308: a 308 reaches our HTTPError handler with its
+    # Location unparsed, and urljoin('https://[bad/') raised out of it. Emulated here on
+    # any version by removing the method (3.11+ parse it inside opener.open instead).
+    import urllib.request as ur
+    monkeypatch.delattr(ur.HTTPRedirectHandler, "http_error_308", raising=False)
+    server, client = make_client(tmp_path, monkeypatch)
+    _post(client, [{"id": "hostile", "name": "Hostile", "url": "https://public.example/",
+                    "custom": True}])
+    opened = _fake_network(server, monkeypatch, {"*": ("redirect", code, "https://[bad/")})
+    assert client.get("/api/service-icon/hostile").status_code == 404
+    assert server._icon_miss_marker("hostile").exists()
+    tried = len(opened)
+    assert client.get("/api/service-icon/hostile").status_code == 404
+    assert len(opened) == tried                # negatively cached like any other miss
+
+
 def test_a_url_http_client_refuses_is_a_failed_candidate_not_a_500(tmp_path, monkeypatch):
     # A space in an icon href (sloppy markup; browsers percent-encode it) makes
     # http.client raise InvalidURL, an HTTPException, before anything is connected.

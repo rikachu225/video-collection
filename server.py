@@ -1514,7 +1514,13 @@ def _icon_http_get(url, accept="*/*", deadline=None, lookup=None):
             resp = opener.open(req, timeout=min(ICON_TIMEOUT, remaining))
         except HTTPError as e:
             if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
-                url = urljoin(url, e.headers["Location"])
+                # Python 3.10 has no http_error_308, so a 308's Location arrives here
+                # unparsed; one urljoin can't parse ('https://[bad/') is a failed
+                # candidate, not an exception out of this handler (a 500, no miss marker).
+                try:
+                    url = urljoin(url, e.headers["Location"])
+                except ValueError:
+                    return None
                 continue
             return None
         except (URLError, OSError, ValueError, HTTPException) as e:
