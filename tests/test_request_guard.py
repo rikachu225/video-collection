@@ -247,3 +247,83 @@ def test_cross_origin_reads_get_no_cors_grant(tmp_path, monkeypatch):
     for path in ("/api/streaming", "/api/service-icon/netflix", "/api/ai/config"):
         res = client.get(path, headers={"Origin": "https://evil.example"})
         assert "Access-Control-Allow-Origin" not in res.headers, path
+
+
+# ── Resource and frame isolation ──
+def test_every_api_response_is_same_origin_only_even_without_fetch_metadata(tmp_path,
+                                                                            monkeypatch):
+    # Opened at a plain-http LAN address, the browser sends no Sec-Fetch-Site, so the
+    # refusal above can't fire. With CORP another site's <img> fails alike for a 200 and
+    # a 404, so onload vs onerror no longer reveals which services or paths exist.
+    server, client = make_client(tmp_path, monkeypatch)
+    (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
+    lan = {"base_url": "http://192.168.1.5:7777", "environ_base": {"REMOTE_ADDR": "192.168.1.10"}}
+    icon = client.get("/api/service-icon/netflix", **lan)
+    cases = {
+        "icon": (icon, 200),
+        "revalidated icon": (client.get("/api/service-icon/netflix", **lan,
+                                        headers={"If-None-Match": icon.headers["ETag"]}), 304),
+        "bad id": (client.get("/api/service-icon/Bad!", **lan), 400),
+        "unknown service": (client.get("/api/service-icon/guess-miss", **lan), 404),
+        "no such route": (client.get("/api/no-such-route", **lan), 404),
+        "bare /api": (client.get("/api", **lan), 404),
+        "wrong method": (client.put("/api/health", **lan), 405),
+        "rebound host": (client.get("/api/health", base_url="http://evil.example:7777"), 403),
+        "public client": (client.get("/api/health", environ_base={"REMOTE_ADDR": "8.8.8.8"}), 403),
+        "cross-site": (client.get("/api/health", headers={"Sec-Fetch-Site": "cross-site"}), 403),
+        "json": (client.get("/api/streaming", **lan), 200),
+        "thumbnail miss": (client.get("/api/thumbnail/some/clip.mp4", **lan), 404),
+    }
+    for label, (res, status) in cases.items():
+        assert res.status_code == status, label
+        assert res.headers.get("Cross-Origin-Resource-Policy") == "same-origin", label
+
+
+def test_a_500_from_the_api_is_same_origin_only_too(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    server.app.config["PROPAGATE_EXCEPTIONS"] = False     # serve the 500 page, as in production
+
+    def boom():
+        raise RuntimeError("test: a route failing")
+
+    monkeypatch.setattr(server, "_streaming_services", boom)
+    res = client.get("/api/streaming")
+    assert res.status_code == 500
+    assert res.headers["Cross-Origin-Resource-Policy"] == "same-origin"
+
+
+@pytest.mark.parametrize("path", ["/", "/index.html", "/no-such-page"])
+def test_html_cannot_be_framed_by_another_site(tmp_path, monkeypatch, path):
+    # Paths outside /api pass the fetch-metadata check by design (other sites may link to
+    # the app), so without this any site could frame the SPA and trick clicks onto its
+    # one-click actions. The desktop window loads the app top-level.
+    _, client = make_client(tmp_path, monkeypatch)
+    res = client.get(path, headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Dest": "iframe"})
+    assert res.mimetype == "text/html"
+    assert res.headers["X-Frame-Options"] == "SAMEORIGIN"
+    assert res.headers["Content-Security-Policy"] == "frame-ancestors 'self'"
+
+
+def test_a_routes_own_csp_is_kept_and_only_gains_frame_ancestors(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+
+    @server.app.route("/test-own-csp")
+    def own_csp():
+        return server.Response("<p>x</p>", mimetype="text/html",
+                               headers={"Content-Security-Policy": "default-src 'none'; sandbox;"})
+
+    @server.app.route("/test-own-frame-ancestors")
+    def own_frame_ancestors():
+        return server.Response("<p>x</p>", mimetype="text/html", headers={
+            "Content-Security-Policy": "frame-ancestors 'none'", "X-Frame-Options": "DENY"})
+
+    assert client.get("/test-own-csp").headers["Content-Security-Policy"] == \
+        "default-src 'none'; sandbox; frame-ancestors 'self'"
+    stricter = client.get("/test-own-frame-ancestors")
+    assert stricter.headers["Content-Security-Policy"] == "frame-ancestors 'none'"
+    assert stricter.headers["X-Frame-Options"] == "DENY"
+
+    # The icon route's sandbox policy (an image, not HTML) is left exactly as set.
+    (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
+    assert client.get("/api/service-icon/netflix").headers["Content-Security-Policy"] == \
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox"

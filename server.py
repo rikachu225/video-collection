@@ -150,6 +150,36 @@ def _same_origin_only():
         if fetch_site == "cross-site":
             return jsonify({"error": "Cross-site request refused"}), 403
 
+
+# ── Response headers: resource and frame isolation ─────────────
+# after_request also runs for the guards' 403s, routing 404/405s and (outside testing)
+# the 500 page, so every /api response carries CORP whatever its status.
+#  - Cross-Origin-Resource-Policy: same-origin. The browser refuses to hand an /api
+#    response to another origin's <img>/<video>/<script>; it fails like a network
+#    error, so onload vs onerror no longer tells a 200 from a 404. Unlike the
+#    Sec-Fetch-Site check above, this also works when the app is opened at a plain-http
+#    LAN address, where browsers send no fetch metadata. The GET itself still reaches
+#    the server; only enabled services are ever looked up (_icon_lookup_target).
+#  - HTML: no other site may frame the app, or it could trick clicks onto one-click
+#    actions (hide a folder, Refresh Icons, load a playlist). The desktop window loads
+#    the app top-level, and the app frames nothing of its own. A CSP a route set itself
+#    is kept and only gains frame-ancestors.
+_FRAME_ANCESTORS = "frame-ancestors 'self'"
+
+
+@app.after_request
+def _isolation_headers(response):
+    if request.path == "/api" or request.path.startswith("/api/"):
+        response.headers["Cross-Origin-Resource-Policy"] = "same-origin"
+    if response.mimetype == "text/html":
+        response.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+        csp = response.headers.get("Content-Security-Policy", "").strip().rstrip(";").strip()
+        if not csp:
+            response.headers["Content-Security-Policy"] = _FRAME_ANCESTORS
+        elif "frame-ancestors" not in csp.lower():
+            response.headers["Content-Security-Policy"] = f"{csp}; {_FRAME_ANCESTORS}"
+    return response
+
 # ── Configuration ──────────────────────────────────────────────
 DATA_DIR = Path(os.environ.get("VIDCOL_DATA_DIR") or (Path(__file__).resolve().parent / "data"))
 CONFIG_FILE = DATA_DIR / "config.json"
