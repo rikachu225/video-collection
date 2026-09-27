@@ -226,9 +226,14 @@ function renderBreadcrumb(folderPath) {
 function switchView(view) {
   const main = $("#main");
   if (main && state.currentView) viewScroll[state.currentView] = main.scrollTop;
+  const wasHidden = state.currentView !== view;
   state.currentView = view;
   $$(".view").forEach((v) => v.classList.remove("active"));
   $(`#view-${view}`).classList.add("active");
+  // A window resize skips grids in hidden views (no tracks to clamp against), so their spans
+  // still fit the old width. The theater re-renders on return (loadTheater); Browse with a
+  // folder open does not — re-clamp it now, before scroll is restored against the layout.
+  if (wasHidden && view === "browse" && state.currentFolder) reclampBentoGrid(dom.videoGrid);
   $$(".nav-btn").forEach((b) => b.classList.remove("active"));
   $(`.nav-btn[data-view="${view}"]`)?.classList.add("active");
   $$("#mobile-tabbar .tab-btn").forEach((b) => b.classList.remove("active"));
@@ -605,11 +610,12 @@ function bentoTileWidth(grid, cols) {
 
 // Apply a stored column span, clamped to the view's range AND to the columns that
 // actually exist (a narrow viewport can't fit a 6-wide tile). The user's stored
-// choice is never modified — only what we render.
-function applyBentoCols(card, cols, view, fallback) {
+// choice is never modified — only what we render. `trackCount` is passed by callers
+// that measured the grid already (reclampBentoGrid); otherwise it is read here.
+function applyBentoCols(card, cols, view, fallback, trackCount) {
   const [min, max] = BENTO_COL_RANGE[view];
   const grid = card.parentElement;
-  const trackCount = grid ? gridTracks(grid).tracks.length : max;
+  if (trackCount == null) trackCount = grid ? gridTracks(grid).tracks.length : max;
   const dflt = fallback || BENTO_DEFAULT_COLS[view];
   let wanted = Math.max(min, Math.min(max, cols || dflt));
   // Snap stored sizes too, so tiles saved before this rule (or under a different clip count)
@@ -644,31 +650,48 @@ function bentoSpan(card, knownWidth) {
   card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((mediaH + chromeH + gap) / (BENTO_ROW + gap)))}`;
 }
 
-// Re-derive a tile's column span from the stored choice — the same inputs a render uses.
-// applyBentoCols clamps to the tracks that exist at the time, so without this a narrower
-// window keeps a span wider than the grid and CSS Grid invents implicit columns (and a
-// wider one never gets the user's size back). A hidden grid resolves no tracks, so there is
-// nothing to clamp against — it is left as it was rather than un-clamped.
-function reapplyBentoCols(el) {
-  if (!el.parentElement || !gridTracks(el.parentElement).tracks.length) return;
+// Re-derive a tile's column span from the stored choice — the same inputs a render uses —
+// clamped to `trackCount`. False when there is no stored choice to go on (unknown tile).
+function reapplyBentoCols(el, trackCount) {
   if (el.classList.contains("theater-cell")) {
     const clip = state.theaterClips.find((c) => c.path === el.dataset.path);
-    if (clip) applyBentoCols(el, clip.bentoCols, "theater", theaterDefaultCols(state.theaterClips.length));
-  } else if (el.dataset.path != null) {
-    applyBentoCols(el, (state.currentFolderLayouts || {})[el.dataset.path]?.tileCols, "browse");
+    if (!clip) return false;
+    applyBentoCols(el, clip.bentoCols, "theater", theaterDefaultCols(state.theaterClips.length), trackCount);
+    return true;
   }
+  if (el.dataset.path == null) return false;
+  applyBentoCols(el, (state.currentFolderLayouts || {})[el.dataset.path]?.tileCols, "browse", undefined, trackCount);
+  return true;
+}
+
+// Re-clamp every tile in a bento grid to the grid's current width: column spans from the
+// stored choices, then row spans. applyBentoCols clamps to the tracks that exist at render
+// time, so without this a narrower window keeps spans wider than the grid (and a wider one
+// never gets the user's size back).
+// The count to clamp against must come from the grid's TEMPLATE. The resolved
+// gridTemplateColumns also lists implicit columns, and a span wider than the template is
+// exactly what creates them — clamp against that and the oversized span keeps itself
+// legal (a 3-wide card in a 2-column grid reads as 3 columns and stays 3 wide). So measure
+// with every tile at one column, where no implicit column can exist, then apply.
+// A hidden grid resolves no tracks, so there is nothing to clamp against: it is left as it
+// was, and re-clamped when its view is shown again (switchView).
+function reclampBentoGrid(grid) {
+  if (!grid || !gridTracks(grid).tracks.length) return;
+  const tiles = [...grid.children].filter((el) => el.matches(".video-card, .theater-cell"));
+  const dragged = (el) => bentoResize && bentoResize.card === el;   // the drag owns its span
+  const before = tiles.map((el) => el.style.gridColumnEnd);
+  tiles.forEach((el) => { el.style.gridColumnEnd = "span 1"; });
+  const trackCount = gridTracks(grid).tracks.length;
+  tiles.forEach((el, i) => {
+    if (dragged(el) || !reapplyBentoCols(el, trackCount)) el.style.gridColumnEnd = before[i];
+  });
+  tiles.forEach((el) => { if (!dragged(el)) bentoSpan(el); });
 }
 
 let bentoResizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(bentoResizeTimer);
-  bentoResizeTimer = setTimeout(() => {
-    $$(".video-grid.bento .video-card, .theater-grid .theater-cell").forEach((el) => {
-      if (bentoResize && bentoResize.card === el) return;   // mid-drag: the drag owns its span
-      reapplyBentoCols(el);
-      bentoSpan(el);
-    });
-  }, 150);
+  bentoResizeTimer = setTimeout(() => $$(".video-grid.bento, .theater-grid").forEach(reclampBentoGrid), 150);
 });
 
 // ── Render Video Grid ────────────────────────────────────────

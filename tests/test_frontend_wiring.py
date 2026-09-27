@@ -4,20 +4,27 @@ Why this exists: 3557c67. A cloud-sync conflict dropped the Refresh Icons
 listener from app.js. The button was still in index.html, clicking it did
 nothing, and the suite stayed green because no test looked at the frontend.
 
-No browser and no node. A small scanner walks app.js and assistant.js the way a
-JS tokenizer would (comments, strings, template literals, regex literals) and
-records every id lookup - $("#id"), querySelector("#id"), getElementById("id") -
-with whether it sits at the TOP LEVEL of the script (runs once when the script
-loads, which is where this app binds its listeners) or inside a function body.
-The body of an IIFE - assistant.js is wrapped in one - counts as top level.
+The wiring checks need no browser and no node. A small scanner walks app.js and
+assistant.js the way a JS tokenizer would (comments, strings, template literals,
+regex literals) and records every id lookup - $("#id"), querySelector("#id"),
+getElementById("id") - with whether it sits at the TOP LEVEL of the script (runs
+once when the script loads, which is where this app binds its listeners) or inside
+a function body. The body of an IIFE - assistant.js is wrapped in one - counts as
+top level.
 
 (a) Every id looked up at top level exists in index.html. A missing one is
     null.addEventListener(...) at load time, which aborts the rest of the script.
 (b) Every <button id> in index.html is looked up at top level. A button reached
     only from inside a function is not wired - exactly the 3557c67 shape, where
     refreshServiceIcons() still read the button but nothing bound its click.
+
+The behaviour checks at the end run real sections of app.js under node against a
+small fake DOM (skipped when node is not on PATH).
 """
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -362,3 +369,196 @@ def test_every_ui_command_tool_has_a_handler_in_assistant_js():
     keys = set(re.findall(r"^\s{4}(\w+)\s*:", block.group(1), flags=re.M))
     missing = sorted(ai_agent.UI_COMMAND_TOOLS - keys)
     assert not missing, f"UI commands the model can emit but assistant.js can't run: {missing}"
+
+
+# ── Behaviour: real app.js sections under node ───────────────────────────────
+# Each test cuts whole sections out of app.js at its `// ── Title` headers, runs them
+# under node against the fake DOM below, and asserts on what the code DID. The fake
+# models only the browser behaviour a test depends on, and says so where it does.
+NODE = shutil.which("node")
+needs_node = pytest.mark.skipif(NODE is None, reason="node is not on PATH")
+
+
+def _app_section(title):
+    """One `// ── <title>` section of app.js, from its header up to the next one."""
+    lines = (STATIC / "app.js").read_text(encoding="utf-8").splitlines(keepends=True)
+    starts = [i for i, line in enumerate(lines) if line.startswith("// ── " + title)]
+    assert len(starts) == 1, f"app.js section {title!r}: {len(starts)} headers found"
+    end = next((i for i in range(starts[0] + 1, len(lines)) if lines[i].startswith("// ── ")), len(lines))
+    return "".join(lines[starts[0]:end])
+
+
+def _run_node(tmp_path, *parts):
+    """Run the parts as one script. The script prints one JSON value on its last line."""
+    script = tmp_path / "harness.js"
+    script.write_text("\n".join(parts), encoding="utf-8")
+    proc = subprocess.run([NODE, str(script)], capture_output=True, text=True,
+                          encoding="utf-8", timeout=60)
+    assert proc.returncode == 0, proc.stderr
+    return json.loads(proc.stdout.strip().splitlines()[-1])
+
+
+_FAKE_DOM = r"""
+const timers = [];                                  // run on demand, never by the clock
+const setTimeout = (fn) => timers.push(fn);
+const clearTimeout = () => {};
+const flushTimers = () => { while (timers.length) timers.shift()(); };
+const requestAnimationFrame = (fn) => fn();
+const winListeners = {};
+const window = {
+  innerWidth: 1600, innerHeight: 900,
+  addEventListener(type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); },
+};
+const fireWindow = (type) => (winListeners[type] || []).forEach((fn) => fn({ type }));
+class FakeClassList {
+  constructor(...names) { this.set = new Set(names); }
+  add(...n) { n.forEach((x) => this.set.add(x)); }
+  remove(...n) { n.forEach((x) => this.set.delete(x)); }
+  contains(n) { return this.set.has(n); }
+  toggle(n, on) { if (on === undefined) on = !this.set.has(n); if (on) this.set.add(n); else this.set.delete(n); return on; }
+}
+class FakeEl {
+  constructor(tag = "div", ...classes) {
+    this.tagName = tag.toUpperCase(); this.classList = new FakeClassList(...classes);
+    this.children = []; this.dataset = {}; this.parentElement = null; this.listeners = {};
+    this.style = { setProperty(k, v) { this[k] = v; } };
+  }
+  get className() { return [...this.classList.set].join(" "); }
+  set className(v) { this.classList = new FakeClassList(...String(v).split(/\s+/).filter(Boolean)); }
+  set innerHTML(v) { if (v === "") this.children = []; this.html = v; }
+  get innerHTML() { return this.html || ""; }
+  get firstElementChild() { return this.children[0] || null; }
+  appendChild(c) { c.parentElement = this; this.children.push(c); return c; }
+  append(...cs) { cs.forEach((c) => this.appendChild(c)); }
+  remove() { const p = this.parentElement; if (p) p.children.splice(p.children.indexOf(this), 1); this.parentElement = null; }
+  addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
+  matches(sel) {
+    return sel.split(",").some((s) => s.trim().split(".").filter(Boolean).every((c) => this.classList.contains(c)));
+  }
+}
+const document = { createElement: (tag) => new FakeEl(tag) };
+const rect = (left, top, width, height) => ({ left, top, width, height, right: left + width, bottom: top + height });
+const hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+"""
+
+
+# ── Bento: a window resize re-clamps column spans ──
+_BENTO_DOM = r"""
+// The CSS Grid behaviour the clamp depends on: the resolved grid-template-columns lists
+// EVERY column - the template's own (`explicit`, set by the test as the window "resizes")
+// plus the implicit ones a span wider than the template creates. A grid in a hidden view
+// has no layout box and reports the computed value, which holds no px tracks.
+const spanOf = (el) => parseInt(String(el.style.gridColumnEnd || "span 1").replace("span ", ""), 10) || 1;
+class FakeGrid extends FakeEl {
+  constructor(view, explicit) { super("div"); this.view = view; this.explicit = explicit; }
+}
+function getComputedStyle(el) {
+  if (!(el instanceof FakeGrid)) return {};
+  const n = Math.max(el.explicit, ...el.children.map(spanOf));
+  return { columnGap: "16px", rowGap: "16px",
+           gridTemplateColumns: el.view.classList.contains("active")
+             ? Array(n).fill("100px").join(" ") : "repeat(12, 1fr)" };
+}
+class FakeTile extends FakeEl {
+  constructor(cls, path) {
+    super("div", cls);
+    this.dataset.path = path;
+    this.append(new FakeEl("div"), Object.assign(new FakeEl("div"), { offsetHeight: 40 }));
+    this.children[0].style.aspectRatio = "1.7778";
+  }
+  get clientWidth() { return spanOf(this) * 116 - 16; }
+}
+const views = { browse: new FakeEl("section", "view", "active"), theater: new FakeEl("section", "view") };
+const browseGrid = new FakeGrid(views.browse, 5), theaterGrid = new FakeGrid(views.theater, 12);
+const grids = [browseGrid, theaterGrid];
+const main = { scrollTop: 0 };
+const dom = { videoGrid: browseGrid, theaterGrid, breadcrumb: new FakeEl("div") };
+function $(sel) {
+  const view = /^#view-(\w+)$/.exec(sel);
+  if (view) return views[view[1]] || null;
+  return { "#main": main, "#browse-media-controls": new FakeEl("div") }[sel] || null;
+}
+function $$(sel) {
+  if (/video-card|theater-cell/.test(sel)) return grids.flatMap((g) => g.children);
+  if (/video-grid|theater-grid/.test(sel)) return grids;
+  if (sel === ".view") return Object.values(views);
+  return [];
+}
+let bentoResize = null;
+const loadTheater = () => {}, loadPlaylists = () => {}, loadStreaming = () => {}, showFolderGrid = () => {};
+const state = {
+  currentView: "browse", currentFolder: "F",
+  currentFolderLayouts: { "F/wide.mp4": { tileCols: 3 } },
+  theaterClips: [{ path: "T/a.mp4" }, { path: "T/b.mp4" }, { path: "T/c.mp4", bentoCols: 12 }],
+};
+"""
+
+_BENTO_SCENARIO = r"""
+const spans = (g) => g.children.map(spanOf);
+const tracks = (g) => getComputedStyle(g).gridTemplateColumns.split(" ").length;
+function renderInto(grid, tile, cols, view, fallback) {   // what renderVideoGrid / renderTheater do
+  grid.appendChild(tile);
+  bentoSpan(tile, bentoTileWidth(grid, applyBentoCols(tile, cols, view, fallback)));
+}
+const resize = (grid, explicit) => { grid.explicit = explicit; fireWindow("resize"); flushTimers(); };
+const out = {};
+
+["F/a.mp4", "F/b.mp4", "F/wide.mp4", "F/c.mp4", "F/d.mp4"].forEach((p) =>
+  renderInto(browseGrid, new FakeTile("video-card", p), state.currentFolderLayouts[p]?.tileCols, "browse"));
+out.browseWide = spans(browseGrid);
+resize(browseGrid, 2);
+out.browseNarrow = spans(browseGrid);
+out.browseNarrowTracks = tracks(browseGrid);
+resize(browseGrid, 5);
+out.browseRewide = spans(browseGrid);
+
+switchView("theater");
+const dflt = theaterDefaultCols(state.theaterClips.length);
+state.theaterClips.forEach((c) => renderInto(theaterGrid, new FakeTile("theater-cell", c.path), c.bentoCols, "theater", dflt));
+out.theaterWide = spans(theaterGrid);
+resize(theaterGrid, 1);                      // the phone rule: .theater-grid { grid-template-columns: 1fr }
+out.theaterPhone = spans(theaterGrid);
+out.theaterPhoneTracks = tracks(theaterGrid);
+resize(theaterGrid, 12);
+out.theaterRewide = spans(theaterGrid);
+
+resize(browseGrid, 2);                       // the window narrows while Browse is hidden
+out.browseWhileHidden = spans(browseGrid);
+switchView("browse");                        // back to the open folder: no re-render
+out.browseShownAgain = spans(browseGrid);
+out.browseShownAgainTracks = tracks(browseGrid);
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def bento_run(tmp_path_factory):
+    if NODE is None:
+        pytest.skip("node is not on PATH")
+    return _run_node(tmp_path_factory.mktemp("bento"), _FAKE_DOM, _BENTO_DOM, _app_section("Bento grid"),
+                     _app_section("Navigation"), _BENTO_SCENARIO)
+
+
+def test_window_resize_reclamps_bento_spans_against_the_template_not_implicit_columns(bento_run):
+    # A 3-wide card in a 2-column grid makes CSS Grid add a third, implicit column, and the
+    # resolved track list includes it - so clamping against that list kept the card 3 wide
+    # (and packed its neighbours into the implicit column) however often it re-ran.
+    got = bento_run
+    assert got["browseWide"] == [1, 1, 3, 1, 1]
+    assert got["browseNarrow"] == [1, 1, 2, 1, 1], "narrowing the window must re-clamp the wide card"
+    assert got["browseNarrowTracks"] == 2, "a span still wider than the grid is creating implicit columns"
+    assert got["browseRewide"] == [1, 1, 3, 1, 1], "widening must give the stored size back"
+    assert got["theaterWide"] == [6, 6, 12]
+    assert got["theaterPhone"] == [1, 1, 1]
+    assert got["theaterPhoneTracks"] == 1
+    assert got["theaterRewide"] == [6, 6, 12]
+
+
+def test_a_bento_grid_hidden_during_the_resize_is_reclamped_when_shown(bento_run):
+    got = bento_run
+    # Hidden: no tracks to clamp against, so it is left alone rather than un-clamped...
+    assert got["browseWhileHidden"] == [1, 1, 3, 1, 1]
+    # ...and fixed the moment Browse is shown again, which re-renders nothing.
+    assert got["browseShownAgain"] == [1, 1, 2, 1, 1]
+    assert got["browseShownAgainTracks"] == 2
+
