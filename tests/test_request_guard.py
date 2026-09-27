@@ -190,6 +190,32 @@ def test_this_machines_own_names_are_allowed(tmp_path, monkeypatch):
                           environ_overrides={"HTTP_HOST": host}).status_code == 200, host
 
 
+def test_a_fully_qualified_hostname_also_allows_its_short_and_mdns_names(tmp_path, monkeypatch):
+    # On many Linux and macOS hosts gethostname() is the FQDN, but mDNS advertises the
+    # first label (media-box.local), and that is what a phone on the LAN opens.
+    server, client = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.socket, "gethostname", lambda: "Media-Box.example.lan")
+    monkeypatch.setattr(server.socket, "getfqdn", lambda *a: "media-box.example.lan")
+    server._own_hostnames.cache_clear()
+    lan = {"REMOTE_ADDR": "192.168.1.20"}
+    for host in ("media-box.local:7777", "MEDIA-BOX.LOCAL:7777", "media-box:7777",
+                 "media-box.example.lan:7777", "media-box.example.lan.local:7777"):
+        res = client.get("/api/health", environ_base=lan, environ_overrides={"HTTP_HOST": host})
+        assert res.status_code == 200, host
+    for host in ("media-box.evil.example:7777", "box.local:7777", "example.lan:7777",
+                 "media.local:7777"):
+        res = client.get("/api/health", environ_base=lan, environ_overrides={"HTTP_HOST": host})
+        assert res.status_code == 403, host
+
+
+def test_an_ip_literal_hostname_is_not_shortened(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.socket, "gethostname", lambda: "192.168.1.5")
+    monkeypatch.setattr(server.socket, "getfqdn", lambda *a: "192.168.1.5")
+    server._own_hostnames.cache_clear()
+    assert "192" not in server._own_hostnames()
+
+
 def test_extra_hosts_can_be_allowed_explicitly(tmp_path, monkeypatch):
     _, client = make_client(tmp_path, monkeypatch, allowed_hosts="media.lan, Nas.Home.")
     assert client.get("/api/streaming", base_url="http://media.lan:7777").status_code == 200

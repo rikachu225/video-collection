@@ -85,15 +85,30 @@ _FOREIGN_FETCH_SITES = {"cross-site", "same-site"}
 _HOST_HEADER_RE = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([A-Za-z0-9._-]+))(?::\d{1,5})?$")
 
 
+def _is_ip_literal(name):
+    try:
+        ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return True
+
+
 @lru_cache(maxsize=1)
 def _own_hostnames():
     """Names this machine answers to. Extra names (a router DNS alias, a hosts-file
-    entry) can be allowed with VIDCOL_ALLOWED_HOSTS=media.lan,nas.home."""
+    entry) can be allowed with VIDCOL_ALLOWED_HOSTS=media.lan,nas.home.
+
+    gethostname() is fully qualified on many Linux and macOS hosts (media-box.example.lan),
+    while mDNS advertises the first label (media-box.local) and a LAN may resolve the bare
+    one, so both are allowed as well."""
     names = {"localhost"}
     try:
         host = socket.gethostname().strip().rstrip(".").lower()
         if host:
             names.update({host, host + ".local"})
+            short = host.split(".")[0]
+            if short and short != host and not _is_ip_literal(host):
+                names.update({short, short + ".local"})
         fqdn = socket.getfqdn().strip().rstrip(".").lower()
         if fqdn:
             names.add(fqdn)
