@@ -85,13 +85,44 @@ jobs:
           pip install -r requirements.txt
           pip-audit --strict --requirement requirements.txt
 
+      # Matches secret VALUE shapes, not variable names: GEMINI_API_KEY in code is fine,
+      # a pasted key is not. Every tracked file is read (binary too). A hit prints
+      # file:line and the rule only, never the match, so the log doesn't re-leak it.
       - name: Scan for secrets
+        shell: python
         run: |
-          echo "Checking for hardcoded secrets..."
-          ! grep -rn "API_KEY\|SECRET_KEY\|PASSWORD\|TOKEN" --include="*.py" --include="*.js" --include="*.json" . \
-            | grep -v "config.example" \
-            | grep -v "node_modules" \
-            | grep -v ".git/" \
-            | grep -v "# " \
-            | grep -v "venv/" \
-            || echo "No secrets found ✓"
+          import os, re, subprocess, sys
+
+          RULES = [
+              ("Google API key", r"AIza[0-9A-Za-z_-]{35}"),
+              ("OpenAI/Anthropic-style key",
+               r"(?<![A-Za-z0-9])sk-(?:(?:proj|ant|svcacct|admin)-[A-Za-z0-9_-]{20,}|[A-Za-z0-9]{20,})"),
+              ("GitHub token", r"gh[pousr]_[A-Za-z0-9]{36}"),
+              ("GitHub fine-grained token", r"github_pat_[A-Za-z0-9_]{22,}"),
+              ("AWS access key id", r"(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}(?![A-Z0-9])"),
+              ("Slack token", r"xox[baprs]-[0-9A-Za-z-]{10,}"),
+              ("private key block", r"-----BEGIN [A-Z ]*PRIVATE KEY"),
+          ]
+          RULES = [(name, re.compile(rx)) for name, rx in RULES]
+
+          tracked = subprocess.run(["git", "ls-files", "-z"], capture_output=True,
+                                   check=True).stdout.split(b"\0")
+          scanned = hits = 0
+          for raw in filter(None, tracked):
+              if not os.path.isfile(raw):      # submodule gitlink: no content here
+                  continue
+              with open(raw, "rb") as fh:
+                  text = fh.read().decode("latin-1")   # byte-for-byte, so binaries are scanned too
+              scanned += 1
+              path = raw.decode("utf-8", "replace")
+              for lineno, line in enumerate(text.split("\n"), 1):
+                  for name, rx in RULES:
+                      if rx.search(line):
+                          print(f"{path}:{lineno}: possible {name}")
+                          hits += 1
+
+          if hits:
+              print(f"::error::{hits} secret-shaped value(s) in tracked files. "
+                    "Remove them AND rotate the keys - git history still has them.")
+              sys.exit(1)
+          print(f"No secret-shaped values in {scanned} tracked files.")
