@@ -71,9 +71,17 @@ def _lan_only():
 #  - Cross-site writes: any page can POST/DELETE here without reading the reply.
 #    Browsers send Origin (and Sec-Fetch-Site) on those, so a state-changing request
 #    must come from this app's own origin.
-# Clients that send no Host / Origin header (curl, scripts) are not browsers and are
-# left to the IP guard.
+#  - Cross-site reads: <img>/<video>/<script> on any page make the browser GET /api/*
+#    too. The body stays unreadable without CORS, but onload vs onerror leaks the
+#    status (which custom services exist, which library paths do), and a GET can start
+#    work here (an icon lookup). Browsers label each request with Sec-Fetch-Site, so
+#    /api/* refuses "cross-site" and "same-site" (another port of this machine is
+#    same-site). "same-origin" (the SPA itself) and "none" (typed URL, bookmark) pass.
+# Clients that send no Host / Origin / Sec-Fetch-Site header (curl, scripts, monitors)
+# are not browsers and are left to the IP guard. Browsers send fetch metadata only to
+# https and localhost origins, so on a plain-http LAN address the read check is inert.
 _STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_FOREIGN_FETCH_SITES = {"cross-site", "same-site"}
 _HOST_HEADER_RE = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([A-Za-z0-9._-]+))(?::\d{1,5})?$")
 
 
@@ -115,12 +123,16 @@ def _same_origin_only():
     host = request.environ.get("HTTP_HOST", "")
     if host and not _host_allowed(host):
         return jsonify({"error": "Unrecognised Host header"}), 403
+    fetch_site = request.headers.get("Sec-Fetch-Site", "").strip().lower()
+    if fetch_site in _FOREIGN_FETCH_SITES and (request.path == "/api"
+                                               or request.path.startswith("/api/")):
+        return jsonify({"error": "Cross-site request refused"}), 403
     if request.method in _STATE_CHANGING_METHODS:
         origin = request.headers.get("Origin")
         own = f"{request.scheme}://{host or request.host}".lower()
         if origin is not None and origin.strip().lower() != own:
             return jsonify({"error": "Cross-origin request refused"}), 403
-        if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+        if fetch_site == "cross-site":
             return jsonify({"error": "Cross-site request refused"}), 403
 
 # ── Configuration ──────────────────────────────────────────────

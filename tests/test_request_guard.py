@@ -94,6 +94,62 @@ def test_same_origin_writes_from_every_local_address_are_allowed(tmp_path, monke
     assert got.status_code == 200
 
 
+# ── Cross-site reads (fetch metadata) ──
+PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 16
+
+
+@pytest.mark.parametrize("site", ["cross-site", "same-site", " Cross-Site "])
+@pytest.mark.parametrize("method,path", [
+    ("GET", "/api/streaming"),
+    ("GET", "/api/service-icon/netflix"),     # an <img> on any page: probes + outbound fetch
+    ("GET", "/api/service-icon/guess-a-name"),
+    ("GET", "/api/folders"),
+    ("GET", "/api/thumbnail/some/clip.mp4"),
+    ("GET", "/api/stream/some/clip.mp4"),
+    ("POST", "/api/streaming"),
+    ("DELETE", "/api/service-icon/netflix"),
+])
+def test_a_cross_site_or_same_site_api_request_is_refused(tmp_path, monkeypatch, site,
+                                                          method, path):
+    # A page on another site (or on another port of this machine — same-site) can make
+    # the browser send GETs here through <img>/<video>/<script> without reading the
+    # reply. The status still leaks (onload vs onerror), and a GET can trigger work.
+    server, client = make_client(tmp_path, monkeypatch)
+    (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
+    calls = []
+    monkeypatch.setattr(server, "_icon_http_get",
+                        lambda url, accept="*/*", deadline=None: calls.append(url) or None)
+    res = client.open(path, method=method, json=HIJACK if method == "POST" else None,
+                      headers={"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "no-cors",
+                               "Sec-Fetch-Dest": "image"})
+    assert res.status_code == 403
+    assert calls == []
+    assert (server.SERVICE_ICONS_AUTO / "netflix.png").exists()
+
+
+@pytest.mark.parametrize("headers", [
+    {},                                                        # curl, scripts, monitors
+    {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"},
+    {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"},
+    {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"},
+], ids=["no-metadata", "tile-img", "app-fetch", "typed-url"])
+def test_same_origin_and_direct_requests_still_work(tmp_path, monkeypatch, headers):
+    server, client = make_client(tmp_path, monkeypatch)
+    (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
+    res = client.get("/api/service-icon/netflix", headers=headers)   # the app's own tile image
+    assert res.status_code == 200 and res.data == PNG
+    assert client.get("/api/streaming", headers=headers).status_code == 200
+    assert client.get("/api/health", headers=headers).status_code == 200
+
+
+def test_a_link_from_another_site_still_opens_the_app(tmp_path, monkeypatch):
+    # Only /api/* is guarded: a bookmark page or another site may link to the app itself.
+    _, client = make_client(tmp_path, monkeypatch)
+    res = client.get("/", headers={"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate",
+                                   "Sec-Fetch-Dest": "document"})
+    assert res.status_code == 200
+
+
 # ── DNS rebinding ──
 @pytest.mark.parametrize("path", ["/", "/api/streaming", "/api/folders", "/api/ai/config"])
 def test_a_rebound_host_cannot_read_the_api(tmp_path, monkeypatch, path):
