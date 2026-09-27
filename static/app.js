@@ -644,11 +644,30 @@ function bentoSpan(card, knownWidth) {
   card.style.gridRowEnd = `span ${Math.max(1, Math.ceil((mediaH + chromeH + gap) / (BENTO_ROW + gap)))}`;
 }
 
+// Re-derive a tile's column span from the stored choice — the same inputs a render uses.
+// applyBentoCols clamps to the tracks that exist at the time, so without this a narrower
+// window keeps a span wider than the grid and CSS Grid invents implicit columns (and a
+// wider one never gets the user's size back). A hidden grid resolves no tracks, so there is
+// nothing to clamp against — it is left as it was rather than un-clamped.
+function reapplyBentoCols(el) {
+  if (!el.parentElement || !gridTracks(el.parentElement).tracks.length) return;
+  if (el.classList.contains("theater-cell")) {
+    const clip = state.theaterClips.find((c) => c.path === el.dataset.path);
+    if (clip) applyBentoCols(el, clip.bentoCols, "theater", theaterDefaultCols(state.theaterClips.length));
+  } else if (el.dataset.path != null) {
+    applyBentoCols(el, (state.currentFolderLayouts || {})[el.dataset.path]?.tileCols, "browse");
+  }
+}
+
 let bentoResizeTimer;
 window.addEventListener("resize", () => {
   clearTimeout(bentoResizeTimer);
   bentoResizeTimer = setTimeout(() => {
-    $$(".video-grid.bento .video-card, .theater-grid .theater-cell").forEach((el) => bentoSpan(el));
+    $$(".video-grid.bento .video-card, .theater-grid .theater-cell").forEach((el) => {
+      if (bentoResize && bentoResize.card === el) return;   // mid-drag: the drag owns its span
+      reapplyBentoCols(el);
+      bentoSpan(el);
+    });
   }, 150);
 });
 
@@ -678,6 +697,7 @@ function renderVideoGrid(videos) {
   videos.forEach((video) => {
     const card = document.createElement("div");
     card.className = "video-card";
+    card.dataset.path = video.path;   // lets a window resize re-read this card's stored tileCols
     card.innerHTML = `
       <div class="video-thumb" data-path="${video.path}">
         <img class="thumb-img" loading="lazy" decoding="async" alt=""
