@@ -22,6 +22,7 @@ import ssl
 import tempfile
 import threading
 import time
+from contextlib import contextmanager
 from functools import lru_cache, partial
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 
@@ -1424,7 +1425,13 @@ def _discard_icon_file(path):
 
 
 def _clear_fetched_icon(service_id):
-    """Remove the fetched copy and the miss marker. Never the user's drop-in."""
+    """Remove the fetched copy and the miss marker. Never the user's drop-in.
+
+    A lookup already running for this id is invalidated first (_icon_commit), without
+    waiting for the per-id lock it holds for up to ICON_BUDGET: its result belongs to
+    the URL the service had when it started, so it is discarded, not written after this.
+    """
+    _invalidate_icon_lookups(service_id)
     removed = 0
     for ext in _ICON_EXTS + (".miss",):
         removed += _discard_icon_file(SERVICE_ICONS_AUTO / f"{service_id}{ext}")
@@ -1448,6 +1455,34 @@ def _icon_lock(service_id):
         return _icon_locks.setdefault(service_id, threading.Lock())
 
 
+# Per-id generation, bumped by every clear. A lookup reads it before it reads the
+# service's URL and writes its result only if it is unchanged, so a save that re-points
+# the service (or Refresh Icons) wins over a lookup already in flight. Only ids that
+# have been looked up get an entry. Guarded by _icon_commit_lock, which is only ever
+# held for one generation check plus the local file write that goes with it.
+_icon_generations = {}
+_icon_commit_lock = threading.Lock()
+
+
+def _icon_generation(service_id):
+    with _icon_commit_lock:
+        return _icon_generations.setdefault(service_id, 0)
+
+
+def _invalidate_icon_lookups(service_id):
+    with _icon_commit_lock:
+        if service_id in _icon_generations:
+            _icon_generations[service_id] += 1
+
+
+@contextmanager
+def _icon_commit(service_id, generation):
+    """Hold while writing a lookup's result (icon or miss marker). Yields False when
+    the fetched copy was cleared since `generation` was read: write nothing then."""
+    with _icon_commit_lock:
+        yield _icon_generations.get(service_id) == generation
+
+
 def _write_icon_atomically(target, body):
     """Write to a temp file beside `target`, then os.replace() it into place: a reader
     sees the old file or the complete new one, never a half-written icon, and a failed
@@ -1465,13 +1500,17 @@ def _write_icon_atomically(target, body):
         raise
 
 
-def _fetch_service_icon(service):
+def _fetch_service_icon(service, generation=None):
     """Resolve, download and cache one service's icon. Returns the cached Path or None.
 
     The whole lookup — homepage, every candidate, every redirect — shares one
     ICON_BUDGET deadline. Running out counts as a miss (negative-cached like any other).
+    `generation` must be read (_icon_generation) before `service` was; nothing is
+    written if the icon was cleared since (see _icon_commit).
     """
     service_id = service["id"]
+    if generation is None:
+        generation = _icon_generation(service_id)
     marker = _icon_miss_marker(service_id)
     if marker.exists():
         try:
@@ -1493,17 +1532,26 @@ def _fetch_service_icon(service):
             continue                       # content-type allow-list: images only
         target = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
         try:
-            _write_icon_atomically(target, body)
+            with _icon_commit(service_id, generation) as current:
+                if not current:
+                    return None            # re-pointed or refreshed meanwhile: stale result
+                _write_icon_atomically(target, body)
         except OSError:
             return None
         _discard_icon_file(marker)
         return target
 
-    try:
-        marker.write_text("", encoding="utf-8")   # negative cache; retried after ICON_MISS_TTL
-    except OSError:
-        pass
+    with _icon_commit(service_id, generation) as current:
+        if current:
+            try:
+                marker.write_text("", encoding="utf-8")   # negative cache; retried after ICON_MISS_TTL
+            except OSError:
+                pass
     return None
+
+
+def _icon_service(service_id):
+    return next((s for s in _streaming_services() if s["id"] == service_id), None)
 
 
 @app.route("/api/service-icon/<service_id>")
@@ -1514,13 +1562,18 @@ def service_icon(service_id):
 
     path = _find_service_icon(service_id)
     if path is None:
-        service = next((s for s in _streaming_services() if s["id"] == service_id), None)
-        if service is None:
+        if _icon_service(service_id) is None:
             return jsonify({"error": "Unknown service"}), 404
         with _icon_lock(service_id):
             path = _find_service_icon(service_id)    # a parallel request may have just fetched it
             if path is None:
-                path = _fetch_service_icon(service)
+                # Generation first, then the service: a save that re-points it after this
+                # point also bumps the generation, so this result is discarded. Read here,
+                # not before the lock, so a request that queued behind a lookup uses the
+                # URL saved meanwhile.
+                generation = _icon_generation(service_id)
+                service = _icon_service(service_id)
+                path = _fetch_service_icon(service, generation) if service else None
     if path is None:
         return jsonify({"error": "No icon found"}), 404
 

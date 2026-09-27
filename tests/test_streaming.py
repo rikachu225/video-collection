@@ -983,6 +983,126 @@ def test_removing_a_service_drops_its_fetched_icon_but_never_a_drop_in(tmp_path,
     assert (server.SERVICE_ICONS_DIR / "news.png").exists()
 
 
+PNG_B = b"\x89PNG\r\n\x1a\n" + b"B" * 64
+
+
+def _blocking_fetch(old_lookup_finds_icon):
+    """Stub for _icon_http_get. The FIRST request to a.example (the homepage) blocks
+    until `release` is set; a.example's apple-touch icon is PNG only if
+    `old_lookup_finds_icon`; b.example always serves PNG_B."""
+    import threading
+    in_flight, release, calls = threading.Event(), threading.Event(), []
+
+    def fetch(url, accept="*/*", deadline=None):
+        calls.append(url)
+        if url == "https://a.example.com/" and not in_flight.is_set():
+            in_flight.set()
+            assert release.wait(10)
+        if not url.endswith("/apple-touch-icon.png"):
+            return None
+        if url.startswith("https://b.example.com/"):
+            return (url, "image/png", PNG_B)
+        return (url, "image/png", PNG) if old_lookup_finds_icon else None
+
+    return fetch, in_flight, release, calls
+
+
+@pytest.mark.parametrize("old_lookup_finds_icon", [True, False], ids=["old-icon", "old-miss"])
+@pytest.mark.parametrize("clear", ["save-new-url", "refresh-icons"])
+def test_a_clear_wins_over_a_lookup_already_in_flight(tmp_path, monkeypatch, clear,
+                                                      old_lookup_finds_icon):
+    # The lookup started for https://a.example.com. A save re-pointing the service (or
+    # Refresh Icons) lands while it runs: its result must not be written afterwards —
+    # neither a.example's icon nor a 24h miss marker that would hide b.example's.
+    import threading
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com"})
+    fetch, in_flight, release, calls = _blocking_fetch(old_lookup_finds_icon)
+    monkeypatch.setattr(server, "_icon_http_get", fetch)
+
+    results = {}
+
+    def request(key, method, path, **kwargs):
+        results[key] = server.app.test_client().open(path, method=method, **kwargs)
+
+    lookup = threading.Thread(target=request, args=("lookup", "GET", "/api/service-icon/news"))
+    lookup.start()
+    assert in_flight.wait(10)
+
+    if clear == "save-new-url":
+        args = ("clear", "POST", "/api/streaming")
+        kwargs = {"json": {"services": [{"id": "news", "name": "News", "custom": True,
+                                         "url": "https://b.example.com"}]}}
+    else:
+        args, kwargs = ("clear", "DELETE", "/api/service-icon/news"), {}
+    clearing = threading.Thread(target=request, args=args, kwargs=kwargs)
+    clearing.start()
+    clearing.join(5)
+    alive = clearing.is_alive()
+    release.set()                          # let the old lookup finish either way
+    lookup.join(10)
+    clearing.join(10)
+    assert not alive, "the clear waited for the lookup in flight"
+    assert results["clear"].status_code == 200
+
+    assert results["lookup"].status_code == 404       # its result was discarded...
+    assert _leftovers(server) == []                   # ...not cached, no miss marker
+
+    before = len(calls)
+    res = client.get("/api/service-icon/news")
+    assert len(calls) > before                        # a fresh lookup, not a stale file
+    if clear == "save-new-url":
+        assert res.status_code == 200 and res.data == PNG_B
+
+
+def test_a_request_queued_behind_a_lookup_uses_the_url_saved_meanwhile(tmp_path, monkeypatch):
+    # A second tile request that arrived during the lookup waits on the per-id lock. It
+    # must look the service up AFTER it gets the lock, or it fetches the old URL again.
+    import threading
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com"})
+    fetch, in_flight, release, calls = _blocking_fetch(True)
+    monkeypatch.setattr(server, "_icon_http_get", fetch)
+
+    second_waiting, real_lock = threading.Event(), server._icon_lock
+
+    class _Announcing:
+        def __init__(self, lock):
+            self.lock = lock
+
+        def __enter__(self):
+            if threading.current_thread().name == "second":
+                second_waiting.set()
+            return self.lock.__enter__()
+
+        def __exit__(self, *exc):
+            return self.lock.__exit__(*exc)
+
+    monkeypatch.setattr(server, "_icon_lock", lambda sid: _Announcing(real_lock(sid)))
+    results = {}
+
+    def get(key):
+        results[key] = server.app.test_client().get("/api/service-icon/news")
+
+    first = threading.Thread(target=get, args=("first",))
+    first.start()
+    assert in_flight.wait(10)
+    second = threading.Thread(target=get, args=("second",), name="second")
+    second.start()
+    assert second_waiting.wait(10)
+    try:
+        saved = _save_customs(client, {"id": "news", "name": "News", "url": "https://b.example.com"})
+    finally:
+        release.set()
+        first.join(10)
+        second.join(10)
+    assert saved.status_code == 200
+    assert results["first"].status_code == 404
+    assert results["second"].status_code == 200 and results["second"].data == PNG_B
+    assert calls.count("https://a.example.com/") == 1         # a.example looked up once
+    assert _leftovers(server) == ["news.png"]
+
+
 def _lock_fetched_icons(server, monkeypatch):
     """Make Path.unlink fail inside the fetched-icon cache, as it does on Windows while
     another handle (a send_file in flight, an AV scan, a sync client) has the file open."""
