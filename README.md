@@ -151,16 +151,22 @@ video-collection/
 
 ## 🔒 Privacy
 
-- **Local-first** — your videos, playlists and settings stay on your machine (the optional AI assistant is the only thing that sends library names out; see below)
+- **Local-first** — your videos, playlists and settings stay on your machine (the optional AI assistant is the only thing that sends anything about your library out; see below)
 - **No analytics** — zero tracking, zero telemetry
 - **No accounts** — no login, no cloud sync
 - **Your data stays yours** — config and playlists are plain JSON files on disk
 
 **What does go online (honest disclosure).** The app reaches the internet for three features only, and only when you use them:
 
-- **Streaming tile icons** — when the Streaming tiles are drawn (opening the **Streaming** view, or saving a change in **Settings → Streaming**), the server fetches each *enabled* service's icon it doesn't have yet from that service's website: the homepage (only to find the icon it declares, sometimes on the service's CDN) and standard paths like `/apple-touch-icon.png` and `/favicon.ico`. Plain HTTPS `GET`s whose user agent names the app and its version (`Mozilla/5.0 (compatible; VideoCollection/2.8; +local)`), so the site can tell the request comes from Video Collection — no cookies, no referrer, nothing about you or your library; the site sees your IP address, as with any web request. Icons are cached in `data/service_icons/auto/` and served locally from then on, so your browser never contacts those sites to draw a tile (no hotlinking). A failed lookup is retried at most once a day; **Settings → Refresh Icons** re-fetches on demand. **To opt out:** hide the services you don't use (the server refuses to look up a hidden service; an icon it cached before you hid one stays on disk and is still served locally), or drop your own image in as `data/service_icons/<service-id>.png` — it always wins and that site is never contacted. Built-in ids: `netflix`, `max`, `disneyplus`, `primevideo`, `hulu`, `appletv`, `peacock`, `paramount`, `youtube`, `crunchyroll`, `twitch`; a custom service's id is its name in lowercase-with-dashes.
+- **Streaming tile icons** — when the Streaming tiles are drawn (opening the **Streaming** view, or saving a change in **Settings → Streaming**), the server fetches each *enabled* service's icon it doesn't have yet from that service's website: the homepage (only to find the icon it declares, sometimes on the service's CDN) and standard paths like `/apple-touch-icon.png` and `/favicon.ico`. Plain HTTPS `GET`s whose user agent names the app and its version (`Mozilla/5.0 (compatible; VideoCollection/2.8; +local)`), so the site can tell the request comes from Video Collection — no cookies, no referrer, nothing about you or your library; the site sees your IP address, as with any web request. Icons are cached in `data/service_icons/auto/` and served locally from then on, so your browser never contacts those sites to draw a tile (no hotlinking). A failed lookup is retried at most once a day — after an hour if it timed out (a slow or unreachable network), and after 5 minutes if the icon couldn't be saved to disk; **Settings → Refresh Icons** re-fetches on demand. **To opt out:** hide the services you don't use (the server refuses to look up a hidden service; an icon it cached before you hid one stays on disk and is still served locally), or drop your own image in as `data/service_icons/<service-id>.png` — it always wins and that site is never contacted. Built-in ids: `netflix`, `max`, `disneyplus`, `primevideo`, `hulu`, `appletv`, `peacock`, `paramount`, `youtube`, `crunchyroll`, `twitch`; a custom service's id is its name in lowercase-with-dashes.
 - **URL downloads** — pasting a link downloads the video from that site via `yt-dlp`.
-- **AI assistant** — **optional and disabled** until you add your own Gemini key. When you *do* use it, your chat messages and library names (folder and clip titles) are sent to **Google Gemini** so it can interpret your request — only while chatting. Video files themselves are never uploaded. Leave it unconfigured to keep your library names on your machine.
+- **AI assistant** — **optional and disabled** until you add your own Gemini key. When you *do* use it, each message you send goes to **Google Gemini** together with what the assistant needs to act on it — only while chatting:
+  - **the conversation** — your new message plus up to 10 earlier messages of this chat (yours and its replies);
+  - **a snapshot of the app** — your theater name; the open view and folder; the clips in your theater and the videos in the open folder — display names, file names, folder names and paths relative to their media source (e.g. `Nature/sunset.mp4`), plus the theater clips' loop points and tile sizes; the clip you have open; the names of your playlists and of the one loaded;
+  - **your streaming tile names** — the enabled ones, including services you added (names only, not their web addresses);
+  - **what its actions return** — for example every folder name with its video count, the names and folders of up to 25 videos matching a search anywhere under your media sources (hidden and excluded folders included), playlist and clip names, counts and error messages — and, when you ask it to create a folder, the names and **full disk paths** of your media sources and the path of the folder it made (a path inside your user folder contains your account name).
+
+  Video files and thumbnails are never uploaded. Leave the assistant unconfigured to keep all of this on your machine.
 
 ## 🛡️ Security Notice
 
@@ -170,7 +176,7 @@ The built-in LAN guard rejects any request originating from a non-private IP —
 
 It also stops web pages you visit from using your browser to reach the app:
 
-- **Host names are allow-listed** (DNS-rebinding protection). Open the app as `localhost`, by IP address (loopback or LAN), or by this computer's own name (`<hostname>`, `<hostname>.local`, its FQDN). Any other name — a router DNS alias, a hosts-file entry, `host.docker.internal` — gets `403 Unrecognised Host header` until you list it in `VIDCOL_ALLOWED_HOSTS` (comma-separated names, no port) and restart:
+- **Host names are allow-listed** (DNS-rebinding protection). Open the app as `localhost`, by IP address (loopback or LAN), or by this computer's own name (`<hostname>`, `<hostname>.local`, its FQDN — and if the hostname is fully qualified, such as `media-box.example.lan`, also `media-box` and `media-box.local`). Any other name — a router DNS alias, a hosts-file entry, `host.docker.internal` — gets `403 Unrecognised Host header` until you list it in `VIDCOL_ALLOWED_HOSTS` (comma-separated names, no port) and restart:
 
   ```bash
   # Linux / macOS
@@ -180,7 +186,8 @@ It also stops web pages you visit from using your browser to reach the app:
   set VIDCOL_ALLOWED_HOSTS=media.lan,nas.home
   start.bat
   ```
-- **Other sites can't write to it**: a `POST`/`PUT`/`PATCH`/`DELETE` from a page on another origin is refused (`403`). When you open the app over https or loopback (`localhost`, `127.0.0.1`), browsers also label every request with its source, so other sites' `<img>`/`<video>` requests to `/api/` are refused too; browsers don't send that label to a plain-http LAN address. Scripts and tools that send no browser headers (curl, monitors) are left to the IP check.
+- **Other sites can't write to it**: a `POST`/`PUT`/`PATCH`/`DELETE` from a page on another origin is refused (`403`). Scripts and tools that send no browser headers (curl, monitors) are left to the IP check.
+- **Other sites can't read from it or frame it**: every `/api/` response is marked same-origin only (`Cross-Origin-Resource-Policy`), so another site's `<img>`/`<video>` pointed at the app fails whatever the answer and can't tell which videos or services exist, and the app's pages refuse to load inside another site's frame. When you open the app over https or loopback (`localhost`, `127.0.0.1`), browsers also label every request with its source, and other sites' requests to `/api/` are refused outright; browsers don't send that label to a plain-http LAN address, so there such a request still reaches the app, but the browser won't hand the answer to the other site. One consequence: another page — a Home Assistant dashboard card, say — can't embed the app's videos or pages. Open the app directly instead.
 
 For your own safety, please:
 
