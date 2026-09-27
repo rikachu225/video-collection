@@ -1045,18 +1045,36 @@ def test_a_failed_miss_marker_write_holds_off_in_memory_not_for_a_day(tmp_path, 
 
 
 def test_parallel_first_requests_share_one_fetch(tmp_path, monkeypatch):
+    # The first request's fetch is held until all four requests have reached the per-id
+    # lock (events, not sleeps), so the other three really are queued behind it.
     import threading
-    import time
     server, _ = make_client(tmp_path, monkeypatch)
     calls, calls_lock = [], threading.Lock()
+    queued, all_queued, real_lock = [0], threading.Event(), server._icon_lock
 
-    def slow(url, accept="*/*", deadline=None, lookup=None):
+    class _Counting:
+        def __init__(self, lock):
+            self.lock = lock
+
+        def __enter__(self):
+            with calls_lock:
+                queued[0] += 1
+                if queued[0] == 4:
+                    all_queued.set()
+            return self.lock.__enter__()
+
+        def __exit__(self, *exc):
+            return self.lock.__exit__(*exc)
+
+    monkeypatch.setattr(server, "_icon_lock", lambda sid: _Counting(real_lock(sid)))
+
+    def held(url, accept="*/*", deadline=None, lookup=None):
         with calls_lock:
             calls.append(url)
-        time.sleep(0.2)
+        assert all_queued.wait(10), "the other requests never queued on the lock"
         return (url, "image/png", PNG) if url.endswith("/apple-touch-icon.png") else None
 
-    monkeypatch.setattr(server, "_icon_http_get", slow)
+    monkeypatch.setattr(server, "_icon_http_get", held)
     start, results = threading.Barrier(4), []
 
     def hit():
