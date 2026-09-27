@@ -1550,8 +1550,12 @@ def _fetch_service_icon(service, generation=None):
     return None
 
 
-def _icon_service(service_id):
-    return next((s for s in _streaming_services() if s["id"] == service_id), None)
+def _icon_lookup_target(service_id):
+    """The service an icon may be FETCHED for: configured and enabled. Hiding a service
+    is the documented opt-out of its lookup, and an unknown id never gets a lock. A
+    file already on disk (a drop-in, or cached before it was hidden) is still served."""
+    return next((s for s in _streaming_services()
+                 if s["id"] == service_id and s["enabled"]), None)
 
 
 @app.route("/api/service-icon/<service_id>")
@@ -1562,8 +1566,8 @@ def service_icon(service_id):
 
     path = _find_service_icon(service_id)
     if path is None:
-        if _icon_service(service_id) is None:
-            return jsonify({"error": "Unknown service"}), 404
+        if _icon_lookup_target(service_id) is None:
+            return jsonify({"error": "Unknown or hidden service"}), 404
         with _icon_lock(service_id):
             path = _find_service_icon(service_id)    # a parallel request may have just fetched it
             if path is None:
@@ -1572,7 +1576,7 @@ def service_icon(service_id):
                 # not before the lock, so a request that queued behind a lookup uses the
                 # URL saved meanwhile.
                 generation = _icon_generation(service_id)
-                service = _icon_service(service_id)
+                service = _icon_lookup_target(service_id)
                 path = _fetch_service_icon(service, generation) if service else None
     if path is None:
         return jsonify({"error": "No icon found"}), 404

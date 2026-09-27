@@ -758,6 +758,44 @@ def test_icon_route_404s_for_an_unknown_service(tmp_path, monkeypatch):
     assert client.get("/api/service-icon/ghost").status_code == 404
 
 
+def test_a_hidden_or_unknown_service_is_never_looked_up(tmp_path, monkeypatch):
+    # Hiding a service is the documented way to opt out of its icon fetch; a GET for it
+    # (the Streaming view never asks, but any request can) must not reach its site.
+    server, client = make_client(tmp_path, monkeypatch)
+    services = _get(client)
+    for s in services:
+        if s["id"] == "crunchyroll":
+            s["enabled"] = False
+    services.append({"name": "Private Site", "url": "https://private.example/",
+                     "custom": True, "enabled": False})
+    assert _post(client, services).status_code == 200
+    calls = []
+    monkeypatch.setattr(server, "_icon_http_get",
+                        lambda url, accept="*/*", deadline=None: calls.append(url) or None)
+
+    for sid in ("crunchyroll", "private-site", "guess-miss"):
+        assert client.get(f"/api/service-icon/{sid}").status_code == 404
+    assert calls == []
+    assert _leftovers(server) == []                 # not even a miss marker
+
+    # A file that is already there (cached earlier, or the user's own) is still served.
+    (server.SERVICE_ICONS_AUTO / "crunchyroll.png").write_bytes(PNG)
+    (server.SERVICE_ICONS_DIR / "private-site.png").write_bytes(PNG)
+    assert client.get("/api/service-icon/crunchyroll").data == PNG
+    assert client.get("/api/service-icon/private-site").data == PNG
+    assert calls == []
+
+    # Shown again, it is looked up as usual.
+    (server.SERVICE_ICONS_AUTO / "crunchyroll.png").unlink()
+    services = _get(client)
+    for s in services:
+        if s["id"] == "crunchyroll":
+            s["enabled"] = True
+    assert _post(client, services).status_code == 200
+    assert client.get("/api/service-icon/crunchyroll").status_code == 404
+    assert calls and all(u.startswith("https://www.crunchyroll.com/") for u in calls)
+
+
 def test_icon_is_fetched_and_cached_then_served_from_disk(tmp_path, monkeypatch):
     server, client = make_client(tmp_path, monkeypatch)
     calls = []
