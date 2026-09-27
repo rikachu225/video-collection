@@ -86,12 +86,19 @@ jobs:
           pip-audit --strict --requirement requirements.txt
 
       # Matches secret VALUE shapes, not variable names: GEMINI_API_KEY in code is fine,
-      # a pasted key is not. Every tracked file is read (binary too). A hit prints
-      # file:line and the rule only, never the match, so the log doesn't re-leak it.
+      # a pasted key is not. Every tracked file is scanned byte-for-byte, which covers
+      # ASCII and UTF-8 text and the ASCII inside binaries. The rules are ASCII, so text
+      # stored in 16/32-bit units (a PowerShell 5.1 `>` redirect, a .reg export) hides a
+      # key from that pass. So a file that starts with a UTF-16/UTF-32 BOM is also decoded
+      # and scanned; if it doesn't decode, the log names it and it is treated as binary.
+      # Any other file (or an undecodable one) containing NUL bytes is also scanned with
+      # the NULs removed, which exposes BOM-less UTF-16/32 ASCII text. Not covered:
+      # compressed or encoded content (a zip, a base64 blob). A hit prints file:line and
+      # the rule only, never the match, so the log doesn't re-leak it.
       - name: Scan for secrets
         shell: python
         run: |
-          import os, re, subprocess, sys
+          import codecs, os, re, subprocess, sys
 
           RULES = [
               ("Google API key", r"AIza[0-9A-Za-z_-]{35}"),
@@ -104,25 +111,45 @@ jobs:
               ("private key block", r"-----BEGIN [A-Z ]*PRIVATE KEY"),
           ]
           RULES = [(name, re.compile(rx)) for name, rx in RULES]
+          # UTF-32-LE's BOM starts with UTF-16-LE's, so the 32-bit codecs are tried first.
+          BOMS = [(codecs.BOM_UTF32_LE, "utf-32"), (codecs.BOM_UTF32_BE, "utf-32"),
+                  (codecs.BOM_UTF16_LE, "utf-16"), (codecs.BOM_UTF16_BE, "utf-16")]
+
+          def views(path, data):
+              """(label, text) passes for one file: raw bytes, then its decoded text."""
+              yield "", data.decode("latin-1")         # byte-for-byte: text and binaries
+              codecs_tried = [c for bom, c in BOMS if data.startswith(bom)]
+              for codec in codecs_tried:
+                  try:
+                      yield f" ({codec})", data.decode(codec)
+                      return
+                  except UnicodeDecodeError:
+                      continue
+              if codecs_tried:
+                  print(f"{path}: starts with a UTF-16/32 BOM but does not decode; "
+                        "skipping the decoded scan, treating it as binary")
+              if b"\0" in data:                          # BOM-less UTF-16/32, binaries
+                  yield " (NULs removed)", data.replace(b"\0", b"").decode("latin-1")
 
           tracked = subprocess.run(["git", "ls-files", "-z"], capture_output=True,
                                    check=True).stdout.split(b"\0")
-          scanned = hits = 0
+          scanned, found = 0, set()
           for raw in filter(None, tracked):
               if not os.path.isfile(raw):      # submodule gitlink: no content here
                   continue
               with open(raw, "rb") as fh:
-                  text = fh.read().decode("latin-1")   # byte-for-byte, so binaries are scanned too
+                  data = fh.read()
               scanned += 1
               path = raw.decode("utf-8", "replace")
-              for lineno, line in enumerate(text.split("\n"), 1):
-                  for name, rx in RULES:
-                      if rx.search(line):
-                          print(f"{path}:{lineno}: possible {name}")
-                          hits += 1
+              for label, text in views(path, data):
+                  for lineno, line in enumerate(text.split("\n"), 1):
+                      for name, rx in RULES:
+                          if (path, lineno, name) not in found and rx.search(line):
+                              found.add((path, lineno, name))
+                              print(f"{path}:{lineno}: possible {name}{label}")
 
-          if hits:
-              print(f"::error::{hits} secret-shaped value(s) in tracked files. "
+          if found:
+              print(f"::error::{len(found)} secret-shaped value(s) in tracked files. "
                     "Remove them AND rotate the keys - git history still has them.")
               sys.exit(1)
           print(f"No secret-shaped values in {scanned} tracked files.")
