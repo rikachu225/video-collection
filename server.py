@@ -910,14 +910,44 @@ class _NoRedirect(HTTPRedirectHandler):
         return None
 
 
-def _is_public_ip(ip):
-    """Reject anything that isn't routable public space.
+# NAT64 prefixes (RFC 6052 well-known, RFC 8215 local-use): the last 32 bits are the
+# IPv4 host the translator actually connects to.
+_NAT64_NETWORKS = (ipaddress.ip_network("64:ff9b::/96"), ipaddress.ip_network("64:ff9b:1::/48"))
 
-    `is_link_local` is what blocks 169.254.169.254 (cloud metadata); `is_private`
-    covers RFC1918 and CGNAT-adjacent space.
+
+def _embedded_ipv4(ip):
+    """IPv4 addresses an IPv6 address really leads to: IPv4-mapped, 6to4, Teredo
+    (server AND client) and NAT64. Empty for IPv4 and for plain IPv6."""
+    if ip.version != 6:
+        return []
+    found = []
+    if ip.ipv4_mapped is not None:
+        found.append(ip.ipv4_mapped)
+    if ip.sixtofour is not None:
+        found.append(ip.sixtofour)
+    if ip.teredo is not None:
+        found.extend(ip.teredo)
+    if any(ip in net for net in _NAT64_NETWORKS):
+        found.append(ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF))
+    return found
+
+
+def _is_public_ip(ip):
+    """True only for globally routable space.
+
+    Both halves are needed. The flags alone miss CGNAT 100.64.0.0/10 (the range
+    Tailscale uses): none of them is set for it, only `is_global` is False. And
+    `is_global` alone is True on some Python versions for addresses that must be
+    refused (::ffff:100.64.0.1, 64:ff9b::7f00:1). `is_link_local` is what blocks
+    169.254.169.254 (cloud metadata); `is_site_local` covers deprecated fec0::/10.
+    An IPv6 address that embeds an IPv4 one is only public if that IPv4 is too.
     """
-    return not (ip.is_private or ip.is_loopback or ip.is_link_local
-                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+    if not ip.is_global:
+        return False
+    if (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast
+            or ip.is_reserved or ip.is_unspecified or getattr(ip, "is_site_local", False)):
+        return False
+    return all(_is_public_ip(v4) for v4 in _embedded_ipv4(ip))
 
 
 def _host_is_public(hostname):

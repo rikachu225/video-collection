@@ -284,6 +284,21 @@ def test_streaming_key_of_the_wrong_type_falls_back_to_defaults(tmp_path, monkey
     "::1",                  # IPv6 loopback
     "fe80::1",              # IPv6 link-local
     "fc00::1",              # IPv6 unique local
+    "fec0::1",              # IPv6 site-local (deprecated; is_global on some Pythons)
+    "100.64.0.1",           # CGNAT — Tailscale's range; no flag set, only is_global=False
+    "100.100.100.100",      # Tailscale MagicDNS resolver
+    "0.0.0.1",              # "this network"
+    "198.18.0.1",           # benchmarking
+    "192.0.0.1",            # IETF protocol assignments
+    "::ffff:127.0.0.1",     # IPv4-mapped loopback
+    "::ffff:100.64.0.1",    # IPv4-mapped CGNAT (is_global=True on 3.11)
+    "64:ff9b::7f00:1",      # NAT64 -> 127.0.0.1 (is_global=True on 3.11)
+    "64:ff9b::a00:1",       # NAT64 -> 10.0.0.1
+    "64:ff9b:1::a00:1",     # local-use NAT64 -> 10.0.0.1
+    "2002:c0a8:101::1",     # 6to4 -> 192.168.1.1
+    "2002:7f00:1::1",       # 6to4 -> 127.0.0.1
+    "2002:a9fe:a9fe::1",    # 6to4 -> 169.254.169.254
+    "2001:0:c0a8:101::1",   # Teredo, server 192.168.1.1
 ])
 def test_private_addresses_are_refused(tmp_path, monkeypatch, bad):
     import ipaddress as _ip
@@ -291,11 +306,45 @@ def test_private_addresses_are_refused(tmp_path, monkeypatch, bad):
     assert server._is_public_ip(_ip.ip_address(bad)) is False
 
 
-@pytest.mark.parametrize("good", ["8.8.8.8", "1.1.1.1", "2001:4860:4860::8888"])
+@pytest.mark.parametrize("good", ["8.8.8.8", "1.1.1.1", "2001:4860:4860::8888",
+                                  "2606:4700:4700::1111"])
 def test_public_addresses_are_allowed(tmp_path, monkeypatch, good):
     import ipaddress as _ip
     server, _ = make_client(tmp_path, monkeypatch)
     assert server._is_public_ip(_ip.ip_address(good)) is True
+
+
+def test_embedded_ipv4_is_unwrapped_from_every_tunnel_form(tmp_path, monkeypatch):
+    # Pins the unwrap itself, independent of how a given Python version flags the
+    # outer IPv6 address — several of these report is_global=True on 3.11.
+    import ipaddress as _ip
+    server, _ = make_client(tmp_path, monkeypatch)
+    v4 = _ip.IPv4Address
+    assert server._embedded_ipv4(_ip.ip_address("::ffff:100.64.0.1")) == [v4("100.64.0.1")]
+    assert server._embedded_ipv4(_ip.ip_address("64:ff9b::7f00:1")) == [v4("127.0.0.1")]
+    assert server._embedded_ipv4(_ip.ip_address("64:ff9b:1::a00:1")) == [v4("10.0.0.1")]
+    assert server._embedded_ipv4(_ip.ip_address("2002:c0a8:101::1")) == [v4("192.168.1.1")]
+    assert server._embedded_ipv4(_ip.ip_address("2606:4700:4700::1111")) == []
+    assert server._embedded_ipv4(_ip.ip_address("8.8.8.8")) == []
+
+
+def test_teredo_is_refused_when_either_embedded_ipv4_is_private(tmp_path, monkeypatch):
+    import ipaddress as _ip
+    server, _ = make_client(tmp_path, monkeypatch)
+    # Teredo stores the client address bit-inverted in the last 32 bits.
+    client_10_0_0_1 = (~int(_ip.IPv4Address("10.0.0.1"))) & 0xFFFFFFFF
+    addr = _ip.IPv6Address((0x2001 << 112) | (int(_ip.IPv4Address("65.54.227.120")) << 64)
+                           | client_10_0_0_1)
+    assert addr.teredo == (_ip.IPv4Address("65.54.227.120"), _ip.IPv4Address("10.0.0.1"))
+    assert _ip.IPv4Address("10.0.0.1") in server._embedded_ipv4(addr)
+    assert server._is_public_ip(addr) is False
+
+
+def test_a_name_resolving_to_cgnat_fails_the_host_guard(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(server.socket, "getaddrinfo",
+                        lambda host, port, *a, **k: [(2, 1, 6, "", ("100.101.102.103", 0))])
+    assert server._host_is_public("tailnet.example") is False
 
 
 def test_localhost_never_passes_the_host_guard(tmp_path, monkeypatch):
