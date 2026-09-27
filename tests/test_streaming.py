@@ -1382,6 +1382,68 @@ def test_a_locked_miss_marker_does_not_fail_a_fetch_that_succeeded(tmp_path, mon
     assert res.status_code == 200 and res.data == PNG
 
 
+@pytest.mark.parametrize("left_behind", ["icon", "miss-marker"])
+def test_a_file_a_repoint_could_not_remove_is_never_used_for_the_new_site(tmp_path, monkeypatch,
+                                                                         left_behind):
+    # The save re-points the service while its fetched icon (or miss marker) is locked,
+    # so the file stays on disk. It is a.example's: it must neither be served for
+    # b.example nor hide b.example's icon for a day.
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com"})
+    old = (server.SERVICE_ICONS_AUTO / "news.png") if left_behind == "icon" \
+        else server._icon_miss_marker("news")
+    old.write_bytes(PNG)
+    with monkeypatch.context() as m:
+        _lock_fetched_icons(server, m)
+        res = _save_customs(client, {"id": "news", "name": "News", "url": "https://b.example.com"})
+        assert res.status_code == 200
+    assert old.exists()                                  # the unlink failed
+
+    calls = []
+
+    def fetch(url, accept="*/*", deadline=None, lookup=None):
+        calls.append(url)
+        return (url, "image/png", PNG_B) if url == "https://b.example.com/apple-touch-icon.png" \
+            else None
+
+    monkeypatch.setattr(server, "_icon_http_get", fetch)
+    res = client.get("/api/service-icon/news")
+    assert res.status_code == 200 and res.data == PNG_B  # b.example's icon, looked up
+    assert calls and all(u.startswith("https://b.example.com/") for u in calls)
+    tried = len(calls)
+    assert client.get("/api/service-icon/news").data == PNG_B
+    assert len(calls) == tried                           # and cached like any other
+
+
+def test_a_locked_icon_after_refresh_is_not_served_while_its_replacement_cant_be_written(
+        tmp_path, monkeypatch):
+    # Refresh Icons while the old file is held open: until a new copy can replace it,
+    # the tile is text-only rather than showing the icon the user asked to refresh.
+    server, client = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    icon = server.SERVICE_ICONS_AUTO / "netflix.png"
+    icon.write_bytes(PNG)
+    monkeypatch.setattr(server, "_icon_http_get",
+                        _fake_fetch({"apple-touch-icon.png": ("image/png", PNG_B)}))
+    real_replace = server.os.replace
+
+    def locked_replace(src, dst):
+        if str(dst) == str(icon):
+            raise PermissionError(13, "The process cannot access the file", str(dst))
+        return real_replace(src, dst)
+
+    with monkeypatch.context() as m:
+        _lock_fetched_icons(server, m)
+        m.setattr(server.os, "replace", locked_replace)
+        assert client.delete("/api/service-icon/netflix").status_code == 200
+        assert client.get("/api/service-icon/netflix").status_code == 404
+    assert icon.read_bytes() == PNG                      # still there, never served
+    now[0] += server.ICON_WRITE_RETRY
+    res = client.get("/api/service-icon/netflix")
+    assert res.status_code == 200 and res.data == PNG_B
+    assert icon.read_bytes() == PNG_B
+
+
 def test_candidate_order_prefers_declared_sizes(tmp_path, monkeypatch):
     server, _ = make_client(tmp_path, monkeypatch)
     html = (b'<html><head>'

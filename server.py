@@ -1595,10 +1595,13 @@ def _icon_candidates(service_url, deadline=None, lookup=None):
 
 
 def _find_service_icon(service_id):
-    """User drop-in wins over the fetched cache."""
+    """User drop-in wins over the fetched cache. A fetched file that a clear could not
+    remove (_icon_stale) belongs to the site the service pointed at before: skipped."""
     for directory in (SERVICE_ICONS_DIR, SERVICE_ICONS_AUTO):
         for ext in _ICON_EXTS:
             candidate = directory / f"{service_id}{ext}"
+            if candidate in _icon_stale:
+                continue
             if candidate.exists() and candidate.is_file():
                 return candidate
     return None
@@ -1608,21 +1611,34 @@ def _icon_miss_marker(service_id):
     return SERVICE_ICONS_AUTO / f"{service_id}.miss"
 
 
+# Fetched-cache files (icons, miss markers) that a clear could not remove. They are
+# still on disk but belong to what the service was before the clear, so they are never
+# served or trusted as a miss: the next lookup's write replaces them (os.replace drops
+# the path from here), or a later clear removes them. In memory only, so a restart
+# forgets them. Plain set operations, atomic under the GIL; no lock, because a write
+# that clears an entry runs while _icon_commit_lock is held.
+_icon_stale = set()
+
+
 def _discard_icon_file(path):
     """Delete one file of the fetched cache. False if it was absent or couldn't go.
 
     On Windows a file another handle holds open (a send_file in flight, an AV scan, a
     sync client) can't be deleted. That is logged and skipped, never raised: POST
     /api/streaming has already saved the config when it clears icons, so a 500 there
-    would report a save that succeeded as failed.
+    would report a save that succeeded as failed. The file is marked stale instead.
     """
     try:
         path.unlink()
     except FileNotFoundError:
+        _icon_stale.discard(path)
         return False
     except OSError as e:
-        app.logger.warning("Could not remove %s from the icon cache: %s", path.name, e)
+        _icon_stale.add(path)
+        app.logger.warning("Could not remove %s from the icon cache (%s); it won't be used",
+                           path.name, e.strerror or type(e).__name__)
         return False
+    _icon_stale.discard(path)
     return True
 
 
@@ -1695,6 +1711,7 @@ def _write_icon_atomically(target, body):
         with os.fdopen(fd, "wb") as f:
             f.write(body)
         os.replace(tmp, target)
+        _icon_stale.discard(target)            # replaced: current again
     except BaseException:
         try:
             os.unlink(tmp)
@@ -1720,7 +1737,10 @@ def _icon_write_failed(service_id, name, e):
 
 def _icon_miss_stands(marker):
     """True while a miss marker is younger than its TTL: ICON_MISS_TTL for a definite
-    miss, ICON_TIMEOUT_MISS_TTL for a lookup that timed out or ran out of budget."""
+    miss, ICON_TIMEOUT_MISS_TTL for a lookup that timed out or ran out of budget. A
+    marker a clear could not remove (_icon_stale) never stands."""
+    if marker in _icon_stale:
+        return False
     try:
         age = datetime.now(timezone.utc).timestamp() - marker.stat().st_mtime
         timed_out = marker.read_bytes().strip() == _ICON_TIMEOUT_MISS
