@@ -1405,14 +1405,29 @@ def _icon_miss_marker(service_id):
     return SERVICE_ICONS_AUTO / f"{service_id}.miss"
 
 
+def _discard_icon_file(path):
+    """Delete one file of the fetched cache. False if it was absent or couldn't go.
+
+    On Windows a file another handle holds open (a send_file in flight, an AV scan, a
+    sync client) can't be deleted. That is logged and skipped, never raised: POST
+    /api/streaming has already saved the config when it clears icons, so a 500 there
+    would report a save that succeeded as failed.
+    """
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as e:
+        app.logger.warning("Could not remove %s from the icon cache: %s", path.name, e)
+        return False
+    return True
+
+
 def _clear_fetched_icon(service_id):
     """Remove the fetched copy and the miss marker. Never the user's drop-in."""
     removed = 0
     for ext in _ICON_EXTS + (".miss",):
-        candidate = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
-        if candidate.exists():
-            candidate.unlink(missing_ok=True)
-            removed += 1
+        removed += _discard_icon_file(SERVICE_ICONS_AUTO / f"{service_id}{ext}")
     return removed
 
 
@@ -1481,7 +1496,7 @@ def _fetch_service_icon(service):
             _write_icon_atomically(target, body)
         except OSError:
             return None
-        marker.unlink(missing_ok=True)
+        _discard_icon_file(marker)
         return target
 
     try:

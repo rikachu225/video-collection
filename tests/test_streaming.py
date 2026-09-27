@@ -983,6 +983,53 @@ def test_removing_a_service_drops_its_fetched_icon_but_never_a_drop_in(tmp_path,
     assert (server.SERVICE_ICONS_DIR / "news.png").exists()
 
 
+def _lock_fetched_icons(server, monkeypatch):
+    """Make Path.unlink fail inside the fetched-icon cache, as it does on Windows while
+    another handle (a send_file in flight, an AV scan, a sync client) has the file open."""
+    real_unlink = server.Path.unlink
+
+    def locked(self, *args, **kwargs):
+        if self.parent == server.SERVICE_ICONS_AUTO:
+            raise PermissionError(13, "The process cannot access the file because it is "
+                                      "being used by another process", str(self))
+        return real_unlink(self, *args, **kwargs)
+
+    monkeypatch.setattr(server.Path, "unlink", locked)
+
+
+def test_a_locked_icon_file_never_turns_a_saved_list_into_a_500(tmp_path, monkeypatch, caplog):
+    # The config is saved BEFORE the fetched icons are cleared, so a 500 here told the
+    # client the save failed when it had not (and the frontend can't parse the HTML error).
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com"})
+    (server.SERVICE_ICONS_AUTO / "news.png").write_bytes(PNG)
+    server._icon_miss_marker("news").write_text("", encoding="utf-8")
+    _lock_fetched_icons(server, monkeypatch)
+
+    res = _save_customs(client, {"id": "news", "name": "News", "url": "https://b.example.com"})
+    assert res.status_code == 200
+    assert _by_id(res.get_json()["services"])["news"]["url"] == "https://b.example.com"
+    assert _by_id(_get(client))["news"]["url"] == "https://b.example.com"
+    assert "news.png" in caplog.text                     # logged, not silently kept
+
+    res = client.delete("/api/service-icon/news")        # Settings > Refresh Icons
+    assert res.status_code == 200 and res.get_json()["removed"] == 0
+
+
+def test_a_locked_miss_marker_does_not_fail_a_fetch_that_succeeded(tmp_path, monkeypatch):
+    import os
+    import time
+    server, client = make_client(tmp_path, monkeypatch)
+    marker = server._icon_miss_marker("netflix")
+    marker.write_text("", encoding="utf-8")
+    stale = time.time() - server.ICON_MISS_TTL - 60
+    os.utime(marker, (stale, stale))
+    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
+    _lock_fetched_icons(server, monkeypatch)
+    res = client.get("/api/service-icon/netflix")
+    assert res.status_code == 200 and res.data == PNG
+
+
 def test_candidate_order_prefers_declared_sizes(tmp_path, monkeypatch):
     server, _ = make_client(tmp_path, monkeypatch)
     html = (b'<html><head>'
