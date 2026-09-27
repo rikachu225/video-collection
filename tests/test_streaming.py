@@ -1204,6 +1204,43 @@ def test_candidate_order_prefers_declared_sizes(tmp_path, monkeypatch):
     assert order[-1].endswith("/favicon.ico")               # bare favicon is last resort
 
 
+def test_the_standard_icon_paths_always_survive_the_candidate_cap(tmp_path, monkeypatch):
+    # An icon-heavy page used to push both apple-touch paths out of the top 7, so they
+    # were never tried at all. Declared icons still rank exactly as before; the cap now
+    # only ever drops page links.
+    server, _ = make_client(tmp_path, monkeypatch)
+    html = b'<link rel="apple-touch-icon" href="/touch.png">' + b"".join(
+        b'<link rel="icon" sizes="%dx%d" href="/i%d.png">' % (n, n, n)
+        for n in (512, 384, 256, 192, 167, 152))
+    monkeypatch.setattr(server, "_icon_http_get",
+                        _fake_fetch({"https://www.netflix.com/": ("text/html", html)}))
+    base = "https://www.netflix.com"
+    assert server._icon_candidates(base + "/browse") == [
+        base + "/i512.png", base + "/i384.png", base + "/i256.png", base + "/i192.png",
+        base + "/touch.png",                               # bare apple-touch-icon: 180
+        base + "/apple-touch-icon.png",                    # 150
+        base + "/apple-touch-icon-precomposed.png",        # 149
+        base + "/favicon.ico",                             # last resort
+    ]                                                      # i167, i152: cut by the cap
+    assert len(server._icon_candidates(base + "/browse")) == server.ICON_MAX_CANDIDATES
+
+
+def test_a_page_link_to_a_standard_path_is_tried_once_at_its_best_rank(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    html = (b'<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">'
+            b'<link rel="icon" sizes="32x32" href="/favicon.ico">'
+            + b"".join(b'<link rel="icon" sizes="64x64" href="/p%d.png">' % n for n in range(20)))
+    monkeypatch.setattr(server, "_icon_http_get",
+                        _fake_fetch({"https://www.netflix.com/": ("text/html", html)}))
+    base = "https://www.netflix.com"
+    order = server._icon_candidates(base + "/browse")
+    assert order == [base + "/apple-touch-icon.png",
+                     base + "/apple-touch-icon-precomposed.png",
+                     base + "/p0.png", base + "/p1.png", base + "/p2.png",
+                     base + "/p3.png", base + "/p4.png",
+                     base + "/favicon.ico"]
+
+
 def test_icon_link_parsing_reads_real_world_markup(tmp_path, monkeypatch):
     server, _ = make_client(tmp_path, monkeypatch)
     html = ('<LINK REL="Shortcut Icon" HREF="/fav.ico">'

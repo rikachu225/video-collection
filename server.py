@@ -1024,7 +1024,7 @@ ICON_MAX_BYTES = 2 * 1024 * 1024
 ICON_MAX_REDIRECTS = 4
 ICON_TIMEOUT = 12                  # per socket operation (connect / one read)
 ICON_BUDGET = 20                   # wall-clock seconds for one whole lookup, all hops
-ICON_MAX_CANDIDATES = 8            # icon URLs tried per lookup (favicon.ico always kept)
+ICON_MAX_CANDIDATES = 8            # icon URLs tried per lookup (standard paths always kept)
 ICON_READ_CHUNK = 64 * 1024
 ICON_MISS_TTL = 24 * 3600          # don't retry a failed lookup for a day
 _icon_clock = time.monotonic       # indirection so tests can drive the budget
@@ -1368,18 +1368,26 @@ def _icon_http_get(url, accept="*/*", deadline=None):
 def _icon_candidates(service_url, deadline=None):
     """Icon URLs to try, best-declared-quality first. At most ICON_MAX_CANDIDATES.
 
-    Standard apple-touch paths are tried before a bare favicon, and anything the page
-    declares with a `sizes` attribute is ranked by that number — which is how Netflix
-    (nothing at the standard paths) and Peacock (only 32px, but declared) resolve at all.
-    The cap keeps /favicon.ico as the last resort, so a page declaring hundreds of icons
-    can't turn one lookup into hundreds of third-party requests.
+    Everything is sorted by rank: a page <link> ranks by its declared `sizes` (a bare
+    apple-touch-icon scores 180, a plain icon 2), the standard /apple-touch-icon.png and
+    /apple-touch-icon-precomposed.png rank 150 and 149, and /favicon.ico comes last
+    unless the page links it higher. The declared sizes are how Netflix (nothing at the
+    standard paths) and Peacock (only 32px, but declared) resolve at all.
+
+    The cap only ever drops PAGE links: the two standard paths and /favicon.ico always
+    keep their slots, so an icon-heavy page can't crowd them out, and a page declaring
+    hundreds of icons can't turn one lookup into hundreds of third-party requests. A URL
+    both linked and standard is tried once, at its better rank.
     """
     parsed = urlparse(service_url)
     origin = f"{parsed.scheme}://{parsed.netloc}"
-    ranked = [
+    favicon = origin + "/favicon.ico"
+    standard = [
         (150, origin + "/apple-touch-icon.png"),
         (149, origin + "/apple-touch-icon-precomposed.png"),
+        (-1, favicon),
     ]
+    ranked = list(standard)
 
     page = _icon_http_get(origin + "/", accept="text/html,*/*", deadline=deadline)
     if page and page[1].startswith("text/html"):
@@ -1390,17 +1398,20 @@ def _icon_candidates(service_url, deadline=None):
             except ValueError:
                 continue
 
-    favicon = origin + "/favicon.ico"
+    reserved = {url for _, url in standard}
+    links_left = ICON_MAX_CANDIDATES - len(reserved)
     seen, ordered = set(), []
     for _, url in sorted(ranked, key=lambda x: -x[0]):
         # data:/http: hrefs would be refused by the fetcher anyway; don't let them
         # use up the candidate budget.
-        if url not in seen and url.lower().startswith("https://"):
-            seen.add(url)
-            ordered.append(url)
-    ordered = ordered[:ICON_MAX_CANDIDATES - 1]
-    if favicon not in ordered:
-        ordered.append(favicon)
+        if url in seen or not url.lower().startswith("https://"):
+            continue
+        seen.add(url)
+        if url not in reserved:
+            if links_left <= 0:
+                continue
+            links_left -= 1
+        ordered.append(url)
     return ordered
 
 
