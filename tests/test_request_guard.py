@@ -21,6 +21,10 @@ def make_client(tmp_path, monkeypatch, allowed_hosts=None):
         monkeypatch.setenv("VIDCOL_ALLOWED_HOSTS", allowed_hosts)
     import server
     importlib.reload(server)
+    # The reload gives _own_hostnames() a fresh cache, and its socket.getfqdn() is a
+    # reverse DNS lookup: about 6s per test on a macOS CI runner. No test needs the
+    # real one (the ones that care patch both names), so keep the suite off the network.
+    monkeypatch.setattr(server.socket, "getfqdn", lambda *a: socket.gethostname())
     server.app.config["TESTING"] = True
     return server, server.app.test_client()
 
