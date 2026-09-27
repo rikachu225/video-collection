@@ -18,6 +18,8 @@ from urllib.parse import urlparse, urljoin
 from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import HTTPError, URLError
 import socket
+import tempfile
+import threading
 import time
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 from flask_cors import CORS
@@ -1217,6 +1219,34 @@ def _icon_miss_marker(service_id):
     return SERVICE_ICONS_AUTO / f"{service_id}.miss"
 
 
+_icon_locks = {}
+_icon_locks_guard = threading.Lock()
+
+
+def _icon_lock(service_id):
+    """One lock per service id, so parallel first requests (every tile asks at once, on
+    8 waitress threads) share one fetch instead of each running their own."""
+    with _icon_locks_guard:
+        return _icon_locks.setdefault(service_id, threading.Lock())
+
+
+def _write_icon_atomically(target, body):
+    """Write to a temp file beside `target`, then os.replace() it into place: a reader
+    sees the old file or the complete new one, never a half-written icon, and a failed
+    write leaves nothing behind. The dot-prefixed temp name never matches a lookup."""
+    fd, tmp = tempfile.mkstemp(dir=target.parent, prefix=f".{target.stem}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(body)
+        os.replace(tmp, target)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def _fetch_service_icon(service):
     """Resolve, download and cache one service's icon. Returns the cached Path or None.
 
@@ -1245,7 +1275,7 @@ def _fetch_service_icon(service):
             continue                       # content-type allow-list: images only
         target = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
         try:
-            target.write_bytes(body)
+            _write_icon_atomically(target, body)
         except OSError:
             return None
         marker.unlink(missing_ok=True)
@@ -1269,7 +1299,10 @@ def service_icon(service_id):
         service = next((s for s in _streaming_services() if s["id"] == service_id), None)
         if service is None:
             return jsonify({"error": "Unknown service"}), 404
-        path = _fetch_service_icon(service)
+        with _icon_lock(service_id):
+            path = _find_service_icon(service_id)    # a parallel request may have just fetched it
+            if path is None:
+                path = _fetch_service_icon(service)
     if path is None:
         return jsonify({"error": "No icon found"}), 404
 

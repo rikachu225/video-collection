@@ -771,6 +771,93 @@ def test_a_failed_lookup_is_negatively_cached(tmp_path, monkeypatch):
     assert len(calls) == first               # no retry storm on every page load
 
 
+def test_an_expired_miss_marker_is_retried(tmp_path, monkeypatch):
+    import os
+    import time
+    server, client = make_client(tmp_path, monkeypatch)
+    marker = server._icon_miss_marker("netflix")
+    marker.write_text("", encoding="utf-8")
+    stale = time.time() - server.ICON_MISS_TTL - 60
+    os.utime(marker, (stale, stale))
+    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
+    res = client.get("/api/service-icon/netflix")
+    assert res.status_code == 200 and res.data == PNG
+    assert not marker.exists()
+
+
+def _leftovers(server):
+    return sorted(p.name for p in server.SERVICE_ICONS_AUTO.iterdir())
+
+
+def test_a_failed_cache_write_leaves_nothing_behind(tmp_path, monkeypatch):
+    # The disk fills up after 10 bytes. Writing straight to netflix.png used to leave
+    # that stub in place, and the next request served it as the icon. io.open is what
+    # both os.fdopen and Path.write_bytes call (Flask's send_file uses builtins.open).
+    server, client = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
+    real_open = io.open
+
+    class _DiskFull:
+        def __init__(self, f):
+            self.f = f
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self.f.close()
+
+        def write(self, data):
+            self.f.write(data[:10])
+            self.f.flush()
+            raise OSError(28, "No space left on device")
+
+    def disk_full_open(file, mode="r", *args, **kwargs):
+        f = real_open(file, mode, *args, **kwargs)
+        return _DiskFull(f) if "w" in mode else f
+
+    with monkeypatch.context() as m:
+        m.setattr(io, "open", disk_full_open)
+        assert client.get("/api/service-icon/netflix").status_code == 404
+        assert client.get("/api/service-icon/netflix").status_code == 404   # no stub served
+    assert _leftovers(server) == []          # no partial icon, no temp file, no miss marker
+
+    res = client.get("/api/service-icon/netflix")
+    assert res.status_code == 200 and res.data == PNG
+    assert _leftovers(server) == ["netflix.png"]
+
+
+def test_parallel_first_requests_share_one_fetch(tmp_path, monkeypatch):
+    import threading
+    import time
+    server, _ = make_client(tmp_path, monkeypatch)
+    calls, calls_lock = [], threading.Lock()
+
+    def slow(url, accept="*/*", deadline=None):
+        with calls_lock:
+            calls.append(url)
+        time.sleep(0.2)
+        return (url, "image/png", PNG) if url.endswith("/apple-touch-icon.png") else None
+
+    monkeypatch.setattr(server, "_icon_http_get", slow)
+    start, results = threading.Barrier(4), []
+
+    def hit():
+        client = server.app.test_client()
+        start.wait()
+        res = client.get("/api/service-icon/hulu")
+        results.append((res.status_code, res.data))
+
+    threads = [threading.Thread(target=hit) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert results == [(200, PNG)] * 4
+    assert calls == ["https://www.hulu.com/", "https://www.hulu.com/apple-touch-icon.png"]
+    assert _leftovers(server) == ["hulu.png"]
+
+
 def test_delete_clears_the_fetched_copy_but_not_the_user_file(tmp_path, monkeypatch):
     server, client = make_client(tmp_path, monkeypatch)
     (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
