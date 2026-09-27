@@ -12,6 +12,10 @@ import shutil
 import mimetypes
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse, urljoin
+from urllib.request import Request, build_opener, HTTPRedirectHandler
+from urllib.error import HTTPError, URLError
+import socket
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
 from flask_cors import CORS
 
@@ -758,6 +762,399 @@ def update_branding():
         "siteName": config["siteName"],
         "theaterName": config["theaterName"],
     })
+
+
+# ── Streaming Services (deep-link launcher tiles) ────────────────
+# These tiles OPEN a service in a new browser tab. Nothing is ever embedded:
+# Netflix sends `X-Frame-Options: DENY`, Max sends `frame-ancestors 'none'`, and
+# even where a frame would load, DRM (Widevine/EME) binds playback licences to the
+# service's own origin. Framing them is impossible, not merely difficult.
+DEFAULT_STREAMING_SERVICES = [
+    {"id": "netflix",     "name": "Netflix",     "url": "https://www.netflix.com/browse",              "accent": "#e50914"},
+    {"id": "max",         "name": "Max",         "url": "https://play.max.com",                        "accent": "#8b5cf6"},
+    {"id": "disneyplus",  "name": "Disney+",     "url": "https://www.disneyplus.com/home",             "accent": "#0063e5"},
+    {"id": "primevideo",  "name": "Prime Video", "url": "https://www.amazon.com/gp/video/storefront",  "accent": "#00a8e1"},
+    {"id": "hulu",        "name": "Hulu",        "url": "https://www.hulu.com/hub/home",               "accent": "#1ce783"},
+    {"id": "appletv",     "name": "Apple TV+",   "url": "https://tv.apple.com",                        "accent": "#c9c9cf"},
+    {"id": "peacock",     "name": "Peacock",     "url": "https://www.peacocktv.com/watch/home",        "accent": "#ffc72c"},
+    {"id": "paramount",   "name": "Paramount+",  "url": "https://www.paramountplus.com/home/",         "accent": "#0064ff"},
+    {"id": "youtube",     "name": "YouTube",     "url": "https://www.youtube.com",                     "accent": "#ff0033"},
+    {"id": "crunchyroll", "name": "Crunchyroll", "url": "https://www.crunchyroll.com",                 "accent": "#f47521"},
+    {"id": "twitch",      "name": "Twitch",      "url": "https://www.twitch.tv",                       "accent": "#9146ff"},
+]
+
+STREAMING_URL_MAX = 2048
+STREAMING_MAX_SERVICES = 100
+_SERVICE_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,47}$")
+_ACCENT_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
+DEFAULT_ACCENT = "#00f0ff"
+
+
+def _validate_service_url(url):
+    """Return (safe_url, None) or (None, reason).
+
+    SECURITY BOUNDARY. The value ends up in an anchor href / window.open() in our own
+    origin, so `javascript:` or `data:` here would be script execution inside the app.
+    https-only, no embedded credentials, no control characters. Enforced server-side so
+    the browser-side check can never be the only gate.
+    """
+    if not isinstance(url, str):
+        return None, "URL must be text"
+    url = url.strip()
+    if not url:
+        return None, "URL is required"
+    if len(url) > STREAMING_URL_MAX:
+        return None, "URL is too long"
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in url):
+        return None, "URL contains control characters"
+    try:
+        parsed = urlparse(url)
+        scheme = (parsed.scheme or "").lower()
+        hostname = parsed.hostname
+        has_creds = bool(parsed.username or parsed.password)
+    except ValueError:
+        return None, "URL could not be parsed"
+    if scheme != "https":
+        return None, "Only https:// links are allowed"
+    if not hostname:
+        return None, "URL needs a hostname"
+    if has_creds:
+        return None, "URLs with embedded credentials are not allowed"
+    return url, None
+
+
+def _safe_accent(value, fallback=DEFAULT_ACCENT):
+    """Six-digit hex only — this value is written into an inline CSS custom property,
+    where an arbitrary string would be a CSS-injection vector."""
+    if isinstance(value, str) and _ACCENT_RE.match(value.strip()):
+        return value.strip().lower()
+    return fallback
+
+
+def _service_id_from_name(name):
+    slug = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return slug[:48] or "service"
+
+
+def _streaming_services():
+    """Saved list merged with shipped defaults. The single builder for every read.
+
+    Saved entries win (the user may have renamed, re-pointed or hidden one). Defaults
+    that aren't present get appended, so upgrades pick up newly shipped services without
+    clobbering customisations — and a service the user *hid* stays in the list with
+    enabled=False, so it is not resurrected on the next read.
+
+    Entries that fail today's validation are dropped rather than raising: a hand-edited
+    or older config.json must never take the app down.
+    """
+    saved = _load_config().get("streamingServices")
+    if not isinstance(saved, list):
+        saved = []
+
+    by_id, order = {}, []
+    for entry in saved:
+        if not isinstance(entry, dict):
+            continue
+        sid = str(entry.get("id") or "").strip().lower()
+        if not _SERVICE_ID_RE.match(sid) or sid in by_id:
+            continue
+        url, err = _validate_service_url(entry.get("url"))
+        if err:
+            continue
+        by_id[sid] = {
+            "id": sid,
+            "name": _sanitize_label(entry.get("name")) or sid,
+            "url": url,
+            "accent": _safe_accent(entry.get("accent")),
+            "enabled": bool(entry.get("enabled", True)),
+            "custom": bool(entry.get("custom", False)),
+        }
+        order.append(sid)
+
+    for default in DEFAULT_STREAMING_SERVICES:
+        if default["id"] not in by_id:
+            by_id[default["id"]] = dict(default, enabled=True, custom=False)
+            order.append(default["id"])
+
+    return [by_id[sid] for sid in order]
+
+
+# ── Service icons: fetch once, cache locally, never hotlink ──────
+# Icons live in data/ (gitignored) — fetched by THIS install for its own use — so the
+# repo ships no third-party brand assets and the app stays offline-capable after the
+# first fetch. A user-supplied file always beats the fetched one.
+SERVICE_ICONS_DIR = DATA_DIR / "service_icons"        # drop your own <id>.png here — wins
+SERVICE_ICONS_AUTO = SERVICE_ICONS_DIR / "auto"       # fetched cache
+SERVICE_ICONS_AUTO.mkdir(parents=True, exist_ok=True)
+
+ICON_MAX_BYTES = 2 * 1024 * 1024
+ICON_MAX_REDIRECTS = 4
+ICON_TIMEOUT = 12
+ICON_MISS_TTL = 24 * 3600          # don't retry a failed lookup for a day
+_ICON_UA = "Mozilla/5.0 (compatible; VideoCollection/2.8; +local)"
+_ICON_TYPES = {
+    "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+    "image/gif": ".gif", "image/svg+xml": ".svg",
+    "image/x-icon": ".ico", "image/vnd.microsoft.icon": ".ico",
+}
+_ICON_EXTS = (".png", ".svg", ".webp", ".jpg", ".jpeg", ".ico", ".gif")
+
+_ICON_LINK_RE = re.compile(r'<link\b[^>]*\brel\s*=\s*["\'][^"\']*\bicon\b[^"\']*["\'][^>]*>', re.I)
+_HREF_RE = re.compile(r'\bhref\s*=\s*["\']([^"\']+)["\']', re.I)
+_SIZES_RE = re.compile(r'\bsizes\s*=\s*["\'](\d+)x\d+["\']', re.I)
+
+
+class _NoRedirect(HTTPRedirectHandler):
+    """Refuse automatic redirects so every hop can be re-checked against the SSRF guard."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def _is_public_ip(ip):
+    """Reject anything that isn't routable public space.
+
+    `is_link_local` is what blocks 169.254.169.254 (cloud metadata); `is_private`
+    covers RFC1918 and CGNAT-adjacent space.
+    """
+    return not (ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_multicast or ip.is_reserved or ip.is_unspecified)
+
+
+def _host_is_public(hostname):
+    """SSRF guard. EVERY address the name resolves to must be public — a name with one
+    public and one private A record must not pass.
+
+    Residual risk [LOW]: DNS rebinding between this check and the connect. Closing that
+    fully means pinning the resolved IP and connecting to it with an explicit Host
+    header; not worth the machinery for a LAN-guarded local app.
+    """
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except (socket.gaierror, UnicodeError, OSError):
+        return False
+    if not infos:
+        return False
+    for info in infos:
+        try:
+            if not _is_public_ip(ipaddress.ip_address(info[4][0])):
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def _icon_http_get(url, accept="*/*"):
+    """GET over https with manual redirect handling. Returns (final_url, ctype, body)."""
+    opener = build_opener(_NoRedirect)
+    for _ in range(ICON_MAX_REDIRECTS + 1):
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or not parsed.hostname:
+            return None
+        if not _host_is_public(parsed.hostname):
+            return None
+        req = Request(url, headers={"User-Agent": _ICON_UA, "Accept": accept})
+        try:
+            resp = opener.open(req, timeout=ICON_TIMEOUT)
+        except HTTPError as e:
+            if e.code in (301, 302, 303, 307, 308) and e.headers.get("Location"):
+                url = urljoin(url, e.headers["Location"])
+                continue
+            return None
+        except (URLError, OSError, ValueError):
+            return None
+        try:
+            ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+            body = resp.read(ICON_MAX_BYTES + 1)
+        finally:
+            resp.close()
+        if len(body) > ICON_MAX_BYTES or not body:
+            return None
+        return url, ctype, body
+    return None
+
+
+def _icon_candidates(service_url):
+    """Icon URLs to try, best-declared-quality first.
+
+    Standard apple-touch paths are tried before a bare favicon, and anything the page
+    declares with a `sizes` attribute is ranked by that number — which is how Netflix
+    (nothing at the standard paths) and Peacock (only 32px, but declared) resolve at all.
+    """
+    parsed = urlparse(service_url)
+    origin = f"{parsed.scheme}://{parsed.netloc}"
+    ranked = [
+        (150, origin + "/apple-touch-icon.png"),
+        (149, origin + "/apple-touch-icon-precomposed.png"),
+    ]
+
+    page = _icon_http_get(origin + "/", accept="text/html,*/*")
+    if page and page[1].startswith("text/html"):
+        html = page[2].decode("utf-8", "ignore")[:400_000]
+        for tag in _ICON_LINK_RE.findall(html):
+            href = _HREF_RE.search(tag)
+            if not href:
+                continue
+            size = _SIZES_RE.search(tag)
+            rank = int(size.group(1)) if size else (180 if "apple-touch" in tag.lower() else 2)
+            try:
+                ranked.append((rank, urljoin(page[0], href.group(1))))
+            except ValueError:
+                continue
+
+    ranked.append((1, origin + "/favicon.ico"))
+
+    seen, ordered = set(), []
+    for _, url in sorted(ranked, key=lambda x: -x[0]):
+        if url not in seen:
+            seen.add(url)
+            ordered.append(url)
+    return ordered
+
+
+def _find_service_icon(service_id):
+    """User drop-in wins over the fetched cache."""
+    for directory in (SERVICE_ICONS_DIR, SERVICE_ICONS_AUTO):
+        for ext in _ICON_EXTS:
+            candidate = directory / f"{service_id}{ext}"
+            if candidate.exists() and candidate.is_file():
+                return candidate
+    return None
+
+
+def _icon_miss_marker(service_id):
+    return SERVICE_ICONS_AUTO / f"{service_id}.miss"
+
+
+def _fetch_service_icon(service):
+    """Resolve, download and cache one service's icon. Returns the cached Path or None."""
+    service_id = service["id"]
+    marker = _icon_miss_marker(service_id)
+    if marker.exists():
+        try:
+            if (datetime.now(timezone.utc).timestamp() - marker.stat().st_mtime) < ICON_MISS_TTL:
+                return None
+        except OSError:
+            pass
+
+    for url in _icon_candidates(service["url"]):
+        got = _icon_http_get(url, accept="image/*,*/*")
+        if not got:
+            continue
+        _, ctype, body = got
+        ext = _ICON_TYPES.get(ctype)
+        if not ext:
+            continue                       # content-type allow-list: images only
+        target = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
+        try:
+            target.write_bytes(body)
+        except OSError:
+            return None
+        marker.unlink(missing_ok=True)
+        return target
+
+    try:
+        marker.write_text("", encoding="utf-8")   # negative cache; retried after ICON_MISS_TTL
+    except OSError:
+        pass
+    return None
+
+
+@app.route("/api/service-icon/<service_id>")
+def service_icon(service_id):
+    """Serve a service icon, fetching it on first request. 404 means 'render text only'."""
+    if not _SERVICE_ID_RE.match(service_id or ""):
+        return jsonify({"error": "Bad service id"}), 400
+
+    path = _find_service_icon(service_id)
+    if path is None:
+        service = next((s for s in _streaming_services() if s["id"] == service_id), None)
+        if service is None:
+            return jsonify({"error": "Unknown service"}), 404
+        path = _fetch_service_icon(service)
+    if path is None:
+        return jsonify({"error": "No icon found"}), 404
+
+    response = send_file(path)
+    response.headers["Cache-Control"] = "public, max-age=604800"
+    # A cached icon is a REMOTE body from a user-added https host. An SVG served as
+    # image/svg+xml is an active document under direct navigation — script in it would
+    # run in our origin, the same primitive _validate_service_url blocks for hrefs.
+    # Tiles use <img>, where SVG is inert, so sandboxing costs the feature nothing.
+    response.headers["Content-Security-Policy"] = "default-src 'none'; style-src 'unsafe-inline'; sandbox"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Content-Disposition"] = "inline; filename=icon"
+    return response
+
+
+@app.route("/api/service-icon/<service_id>", methods=["DELETE"])
+def clear_service_icon(service_id):
+    """Drop the fetched copy so the next request re-resolves it. Never touches a
+    user drop-in — that file is the user's, not ours."""
+    if not _SERVICE_ID_RE.match(service_id or ""):
+        return jsonify({"error": "Bad service id"}), 400
+    removed = 0
+    for ext in _ICON_EXTS + (".miss",):
+        candidate = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
+        if candidate.exists():
+            candidate.unlink(missing_ok=True)
+            removed += 1
+    return jsonify({"status": "ok", "removed": removed})
+
+
+# ── API: Streaming Services ──────────────────────────────────────
+@app.route("/api/streaming", methods=["GET"])
+def get_streaming():
+    """Launcher tiles. `enabled` drives visibility in the Streaming view."""
+    return jsonify({"services": _streaming_services()})
+
+
+@app.route("/api/streaming", methods=["POST"])
+def save_streaming():
+    """Replace the whole list: covers add, edit, reorder and hide in one write path.
+
+    Rejects the entire payload if any entry is invalid — partial saves would silently
+    drop something the user just typed.
+    """
+    payload = request.get_json(silent=True) or {}
+    incoming = payload.get("services")
+    if not isinstance(incoming, list):
+        return jsonify({"error": "services must be a list"}), 400
+    if len(incoming) > STREAMING_MAX_SERVICES:
+        return jsonify({"error": f"Too many services (max {STREAMING_MAX_SERVICES})"}), 400
+
+    cleaned, seen = [], set()
+    for i, entry in enumerate(incoming):
+        if not isinstance(entry, dict):
+            return jsonify({"error": f"Entry {i + 1} is not an object"}), 400
+        name = _sanitize_label(entry.get("name"), max_length=60)
+        if not name:
+            return jsonify({"error": f"Entry {i + 1} needs a name"}), 400
+        url, err = _validate_service_url(entry.get("url"))
+        if err:
+            return jsonify({"error": f"{name}: {err}"}), 400
+
+        sid = str(entry.get("id") or "").strip().lower()
+        if not _SERVICE_ID_RE.match(sid):
+            sid = _service_id_from_name(name)
+        base, n = sid, 2
+        while sid in seen:
+            sid = f"{base}-{n}"
+            n += 1
+        seen.add(sid)
+
+        cleaned.append({
+            "id": sid,
+            "name": name,
+            "url": url,
+            "accent": _safe_accent(entry.get("accent")),
+            "enabled": bool(entry.get("enabled", True)),
+            "custom": bool(entry.get("custom", False)),
+        })
+
+    config = _load_config()
+    config["streamingServices"] = cleaned
+    _save_config(config)
+    return jsonify({"services": _streaming_services()})
 
 
 # ── API: AI Assistant Config (BYOK) ───────────────────────────

@@ -204,8 +204,15 @@ _TOOL_DEFS = {
                         {"type": "object", "properties": {}}),
     "switch_view": ("Switch the main view.", {
         "type": "object",
-        "properties": {"view": {"type": "string", "enum": ["browse", "theater", "playlists"]}},
+        "properties": {"view": {"type": "string", "enum": ["browse", "theater", "playlists", "streaming"]}},
         "required": ["view"]}),
+    "open_streaming_service": ("Open a streaming service (Netflix, Max, Disney+, YouTube, …) in a "
+                               "new browser tab. These services CANNOT be embedded or played inside "
+                               "this app — they forbid framing and their DRM only plays on their own "
+                               "site — so this launches out to the real site.",
+                               {"type": "object",
+                                "properties": {"service": _str("Service name, e.g. 'Netflix'.")},
+                                "required": ["service"]}),
     "open_folder": ("Open a folder in the browse view.", {
         "type": "object", "properties": {"folder": _str("Folder name.")}, "required": ["folder"]}),
 }
@@ -215,7 +222,7 @@ TOOL_NAMES = list(_TOOL_DEFS.keys())
 UI_COMMAND_TOOLS = {
     "play_all", "pause_all", "mute_all", "unmute_all",
     "open_workspace", "close_workspace", "switch_view", "open_folder",
-    "bento_workspace",
+    "bento_workspace", "open_streaming_service",
 }
 
 
@@ -228,10 +235,30 @@ def build_tool():
     return types.Tool(function_declarations=decls)
 
 
+def _streaming_names():
+    """Names of the visible launcher tiles, so the model recommends real ones rather
+    than inventing services the user hasn't configured."""
+    try:
+        import server
+        return [s["name"] for s in server._streaming_services() if s.get("enabled")]
+    except Exception:
+        return []
+
+
 def build_system_prompt(ctx):
     """Build the system instruction with the live context snapshot."""
     import json as _json
     theater_name = (ctx.get("theaterName") or "").strip() or "Theater"
+    services = _streaming_names()
+    streaming_line = (
+        f"Streaming launcher tiles configured: {', '.join(services)}. "
+        "Asking to open, launch or put on one of THOSE names means open_streaming_service; "
+        "don't offer a service that isn't in that list. "
+        "Those services cannot be embedded or played inside this app (they forbid framing "
+        "and their DRM only plays on their own site) — the tool opens the real site in a new "
+        "browser tab. Never offer to play them inside the app. "
+        if services else ""
+    )
     return (
         "You are the in-app assistant for a personal video collection app. "
         "Translate the user's request into the provided tools. Only act on what the user asks. "
@@ -254,6 +281,7 @@ def build_system_prompt(ctx):
         "magazine or Pinterest-style look, give one clip 'hero' or 'full' and leave the rest "
         "'small' so they tile around it; vary a couple to 'medium' for rhythm. Don't make "
         "everything large — the result only reads as a bento if most tiles stay small. "
+        + streaming_line +
         "If a video is currently open (see openVideo in the context), interpret 'this', "
         "'this clip', 'the current one', or 'it' as that open clip — use its theaterIndex. "
         "If a playlist is currently loaded (see loadedPlaylist), 'save this playlist' or "

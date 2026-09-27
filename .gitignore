@@ -9,6 +9,7 @@ data/playlists.json
 data/folder_layouts.json
 data/clip_names.json
 data/thumbnails/
+data/service_icons/
 data/cache/
 data/remux_cache/
 

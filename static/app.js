@@ -97,6 +97,7 @@ const state = {
   allVideos: [],
   theaterClips: [],
   playlists: [],
+  streamingServices: [],         // launcher tiles: {id,name,url,accent,enabled,custom}
   currentView: "browse",
   currentSourceIndex: null,
   currentFolderKey: null,        // "<sourceIndex>:<folder>" for layout persistence
@@ -125,6 +126,8 @@ const dom = {
   theaterEmpty: $("#theater-empty"),
   playlistsList: $("#playlists-list"),
   playlistsEmpty: $("#playlists-empty"),
+  streamingGrid: $("#streaming-grid"),
+  streamingEmpty: $("#streaming-empty"),
   breadcrumb: $("#breadcrumb"),
   stats: $("#stats"),
   searchInput: $("#search-input"),
@@ -225,6 +228,7 @@ function switchView(view) {
 
   if (view === "theater") loadTheater();
   if (view === "playlists") loadPlaylists();
+  if (view === "streaming") loadStreaming();
   if (view === "browse" && !state.currentFolder) showFolderGrid();
 }
 
@@ -2882,6 +2886,248 @@ document.addEventListener("keydown", (e) => {
   }
 });
 
+// ── Streaming (deep-link launcher tiles) ─────────────────────
+// These OPEN a service in a new tab. Nothing is embedded: Netflix sends
+// X-Frame-Options: DENY, Max sends frame-ancestors 'none', and even a frame that
+// loaded would get no DRM licence — Widevine binds playback to the service's origin.
+
+const LAUNCH_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
+
+/** Bumped by "Refresh Icons" so a re-fetched (or newly dropped-in) icon beats the
+ *  browser's 7-day cache on /api/service-icon. Empty on a normal load. */
+let iconBust = "";
+
+/** Defence in depth. The server already enforces https-only, but this value becomes
+ *  an href in our own origin — a second gate costs nothing. */
+function isSafeServiceUrl(url) {
+  try { return new URL(url).protocol === "https:"; } catch { return false; }
+}
+
+function serviceHost(url) {
+  try { return new URL(url).hostname.replace(/^www\./, ""); } catch { return ""; }
+}
+
+function hslToHex(h, s, l) {
+  s /= 100; l /= 100;
+  const k = (n) => (n + h / 30) % 12;
+  const a = s * Math.min(l, 1 - l);
+  const f = (n) => Math.round(255 * (l - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)))));
+  return "#" + [f(0), f(8), f(4)].map((v) => v.toString(16).padStart(2, "0")).join("");
+}
+
+/** Give custom services a stable, distinct accent instead of eleven identical cyan tiles. */
+function accentFromName(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 360;
+  return hslToHex(h, 68, 56);
+}
+
+async function loadStreaming() {
+  const data = await api.get("/api/streaming");
+  state.streamingServices = data.services || [];
+  renderStreaming();
+}
+
+function renderStreaming() {
+  if (!dom.streamingGrid) return;
+  const shown = state.streamingServices.filter((s) => s.enabled && isSafeServiceUrl(s.url));
+  dom.streamingGrid.innerHTML = "";
+  dom.streamingEmpty.classList.toggle("hidden", shown.length > 0);
+  dom.streamingGrid.classList.toggle("hidden", shown.length === 0);
+
+  shown.forEach((svc) => {
+    // A real <a>, not a div+onclick: middle-click, Ctrl-click and keyboard all work.
+    // rel="noopener" is the security bit — without it the opened page receives
+    // window.opener and can navigate this app elsewhere (reverse tabnabbing).
+    const tile = document.createElement("a");
+    tile.className = "streaming-tile";
+    tile.href = svc.url;
+    tile.target = "_blank";
+    tile.rel = "noopener noreferrer";
+    tile.referrerPolicy = "no-referrer";
+    tile.style.setProperty("--svc-accent", svc.accent);
+    tile.dataset.serviceId = svc.id;
+
+    const launch = document.createElement("span");
+    launch.className = "streaming-launch";
+    launch.innerHTML = LAUNCH_ICON;   // constant markup, no user data
+
+    // Fetched once server-side and cached in gitignored data/service_icons/.
+    // A 404 means "no icon available" — drop the <img> and the tile falls back to
+    // the text-only look, so a missing logo can never leave a broken-image box.
+    const logo = document.createElement("img");
+    logo.className = "streaming-logo";
+    logo.alt = "";
+    logo.decoding = "async";   // eager on purpose: every tile is above the fold and the
+                               // icons are small local files, so lazy only risks blanks
+    logo.src = `/api/service-icon/${encodeURIComponent(svc.id)}${iconBust ? `?t=${iconBust}` : ""}`;
+    logo.addEventListener("error", () => logo.remove());
+
+    const name = document.createElement("div");
+    name.className = "streaming-name";
+    name.textContent = svc.name;      // user-controlled -> textContent, never innerHTML
+
+    const host = document.createElement("div");
+    host.className = "streaming-host";
+    host.textContent = serviceHost(svc.url);
+
+    tile.append(launch, logo, name, host);
+    dom.streamingGrid.appendChild(tile);
+  });
+}
+
+/** Used by the AI assistant ("open Netflix"). Matches on name, then host. */
+function openStreamingService(query) {
+  const q = String(query || "").trim().toLowerCase();
+  const list = state.streamingServices.filter((s) => isSafeServiceUrl(s.url));
+  const svc = list.find((s) => s.name.toLowerCase() === q)
+           || list.find((s) => s.id === q)
+           || list.find((s) => s.name.toLowerCase().includes(q))
+           || list.find((s) => serviceHost(s.url).includes(q));
+  if (!svc) {
+    toast(`No streaming service matching "${query}"`, "error");
+    return false;
+  }
+  window.open(svc.url, "_blank", "noopener,noreferrer");
+  toast(`Opening ${svc.name}…`, "success");
+  return true;
+}
+
+// ── Settings > Streaming ─────────────────────────────────────
+async function loadStreamingSettings() {
+  const data = await api.get("/api/streaming");
+  state.streamingServices = data.services || [];
+  renderStreamingSettings();
+}
+
+/** Single write path: the whole list is posted on every change, so the server sees
+ *  one validated shape for add, edit, reorder and hide alike. */
+async function persistStreaming(rerenderSettings = false) {
+  const res = await api.post("/api/streaming", { services: state.streamingServices });
+  if (res.error) {
+    toast(res.error, "error");
+    await loadStreamingSettings();   // the write was refused — resync to server truth
+    return false;
+  }
+  state.streamingServices = res.services || [];
+  if (rerenderSettings) renderStreamingSettings();
+  renderStreaming();
+  return true;
+}
+
+function moveStreaming(from, to) {
+  const list = state.streamingServices;
+  if (to < 0 || to >= list.length) return;
+  [list[from], list[to]] = [list[to], list[from]];
+  persistStreaming(true);
+}
+
+function renderStreamingSettings() {
+  const list = $("#streaming-settings-list");
+  if (!list) return;
+  list.innerHTML = "";
+
+  state.streamingServices.forEach((svc, i) => {
+    const row = document.createElement("div");
+    row.className = `streaming-setting${svc.enabled ? "" : " is-off"}`;
+    row.style.setProperty("--svc-accent", svc.accent);
+
+    const swatch = document.createElement("span");
+    swatch.className = "streaming-swatch";
+
+    const info = document.createElement("div");
+    info.className = "streaming-setting-info";
+    const label = document.createElement("span");
+    label.className = "streaming-setting-name";
+    label.textContent = svc.name;
+    const urlInput = document.createElement("input");
+    urlInput.type = "text";
+    urlInput.className = "streaming-setting-url";
+    urlInput.value = svc.url;
+    urlInput.spellcheck = false;
+    urlInput.addEventListener("change", async () => {
+      const next = urlInput.value.trim();
+      if (next === svc.url) return;
+      if (!isSafeServiceUrl(next)) {
+        toast("Only https:// links are allowed", "error");
+        urlInput.value = svc.url;
+        return;
+      }
+      svc.url = next;
+      await persistStreaming();
+    });
+    info.append(label, urlInput);
+
+    const move = document.createElement("div");
+    move.className = "streaming-move";
+    move.append(
+      makeMoveBtn("M18 15l-6-6-6 6", i > 0, () => moveStreaming(i, i - 1), "Move up"),
+      makeMoveBtn("M6 9l6 6 6-6", i < state.streamingServices.length - 1, () => moveStreaming(i, i + 1), "Move down"),
+    );
+
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = svc.enabled;
+    toggle.title = "Show this tile";
+    toggle.addEventListener("change", () => {
+      svc.enabled = toggle.checked;
+      row.classList.toggle("is-off", !svc.enabled);
+      persistStreaming();
+    });
+
+    row.append(swatch, info, move, toggle);
+
+    // Built-ins are hidden via the checkbox, never deleted — a removed default would
+    // just be re-appended by the server merge on the next read.
+    if (svc.custom) {
+      const del = document.createElement("button");
+      del.className = "icon-btn-sm danger-btn";
+      del.title = "Remove";
+      del.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`;
+      del.addEventListener("click", async () => {
+        state.streamingServices = state.streamingServices.filter((s) => s !== svc);
+        if (await persistStreaming(true)) toast(`Removed "${svc.name}"`, "info");
+      });
+      row.appendChild(del);
+    }
+
+    list.appendChild(row);
+  });
+}
+
+function makeMoveBtn(path, enabled, onClick, title) {
+  const b = document.createElement("button");
+  b.className = "icon-btn-sm";
+  b.title = title;
+  b.disabled = !enabled;
+  b.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="${path}"/></svg>`;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+async function addStreamingService() {
+  const nameEl = $("#streaming-name-input");
+  const urlEl = $("#streaming-url-input");
+  const name = nameEl.value.trim();
+  const url = urlEl.value.trim();
+  if (!name) { toast("Give the service a name", "error"); return; }
+  if (!isSafeServiceUrl(url)) { toast("Enter a full https:// URL", "error"); return; }
+
+  state.streamingServices.push({
+    name, url, accent: accentFromName(name), enabled: true, custom: true,
+  });
+  if (await persistStreaming(true)) {
+    nameEl.value = "";
+    urlEl.value = "";
+    toast(`Added "${name}"`, "success");
+  }
+}
+
+$("#btn-add-streaming").addEventListener("click", addStreamingService);
+$("#streaming-url-input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") addStreamingService();
+});
+
 // ── Settings ────────────────────────────────────────────────────
 $("#btn-settings").addEventListener("click", openSettings);
 $("#settings-close").addEventListener("click", closeSettings);
@@ -2900,6 +3146,7 @@ $("#source-path-input").addEventListener("keydown", (e) => {
 function openSettings() {
   $("#settings-overlay").classList.remove("hidden");
   loadSourcesList();
+  loadStreamingSettings();
 }
 
 function closeSettings() {

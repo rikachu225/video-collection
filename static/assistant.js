@@ -83,6 +83,7 @@
     },
     close_workspace: () => closeWorkspace(),
     bento_workspace: () => { if (typeof autoTileLayout === "function") autoTileLayout(); },
+    open_streaming_service: (a) => openStreamingService(a.service),
     set_loaded_playlist: (a) => { state.loadedPlaylistName = a.name || null; },
     switch_view: (a) => switchView(a.view || "browse"),
     open_folder: (a) => {

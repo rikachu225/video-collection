@@ -61,6 +61,10 @@ API Routes:
   POST /api/clip-name                     ← Set/clear a clip's in-app display label {path, name} (disk file NOT renamed; empty name reverts to filename)
   GET  /api/branding                      ← Get custom site + theater names
   POST /api/branding                      ← Update custom names {siteName, theaterName}
+  GET  /api/streaming                     ← Streaming launcher tiles (defaults merged with user list)
+  POST /api/streaming                     ← Replace whole list {services:[...]} (add/edit/reorder/hide)
+  GET  /api/service-icon/<id>             ← Service icon; fetches+caches on first hit (404 = text-only tile)
+  DEL  /api/service-icon/<id>             ← Clear the FETCHED copy only (never the user's drop-in)
   GET  /api/sources                       ← List configured media roots
   POST /api/sources                      ← Add media root {name, path}
   DEL  /api/sources/<index>              ← Remove media root
@@ -91,7 +95,8 @@ state = {
   currentSourceIndex: null, // Which media source the current folder is from
   theaterClips: [],         // Clips in "My Theater"
   playlists: [],            // All saved playlists
-  currentView: "browse",   // Active view: "browse" | "theater" | "playlists"
+  streamingServices: [],    // Launcher tiles {id,name,url,accent,enabled,custom}
+  currentView: "browse",   // Active view: "browse" | "theater" | "playlists" | "streaming"
   searchQuery: "",          // Search filter text
   theaterPlaying: false,    // Whether theater playback is active
   workspaceOpen: false,     // Workspace fullscreen mode active
@@ -106,6 +111,7 @@ state = {
 2. **My Theater** - Multi-video grid with per-clip loop controls (m:ss format). Play All, Pause All, Mute/Unmute All. Add clips from browse view.
 3. **Playlists** - Save/load/delete named playlists. Loading a playlist replaces Theater clips.
 4. **Workspace** - Fullscreen mode (Browser Fullscreen API). Draggable + resizable panels (4-corner resize handles). Save/restore layout positions. Auto-tiles if no saved layout. Opened from Theater or Browse (any folder).
+5. **Streaming** - Launcher tiles that open Netflix/Max/Disney+/etc. in a new tab. Nothing is embedded (see "Streaming Launcher Tiles" below). Managed in Settings > Streaming.
 
 ### Multi-Source System
 - `data/config.json` stores multiple media root paths
@@ -201,6 +207,20 @@ python server.py 8080        # Start on custom port
 - Stored spans are clamped to the available track count at render time (narrow viewports) WITHOUT changing the user's stored choice.
 - Persistence: `bentoCols` on theater clips (travels with playlists), `tileCols` in `folder_layouts.json` per folder. Layout writes MERGE on both server and client — one entry holds both popup geometry and tile size.
 
+## Streaming Launcher Tiles (v2.8.0)
+- **Nothing is embedded, and that is not fixable.** Netflix returns `X-Frame-Options: DENY`; Max returns `frame-ancestors 'none'` — enforced by the *browser*, not the page, so no proxy or flag defeats it. Independently, their playback runs through EME/Widevine, which binds licences to a verified player on an authorised origin: even a frame that loaded gets no key. Circumventing that is DMCA §1201. **Do not re-attempt iframe embedding of Netflix/Max/Disney+/Prime.**
+- YouTube, Vimeo and Twitch *do* publish embed endpoints (verified: no framing headers). If in-app embedding is ever added it is a separate feature and needs a `frame-src` CSP allowlist — the app currently sets no CSP.
+- `_streaming_services()` is the single builder for reads: saved list wins, missing defaults are appended (so upgrades add new services without wiping customisations). A hidden service stays in the list with `enabled: false`, which is why it isn't resurrected; a service *deleted* from the list re-appears by design. Invalid entries are dropped on read so a hand-edited `config.json` can't crash the app.
+- `POST /api/streaming` replaces the **whole list** — add, edit, reorder and hide share one write path, so there is exactly one place URL validation happens. Invalid entry ⇒ the whole payload is rejected (no silent partial save).
+- **Validation is the security boundary**: https only, no embedded credentials, no control chars, ≤2048 chars, ≤100 services; accents must be six-digit hex (they land in an inline CSS custom property). A `javascript:`/`data:` URL here would be script execution in the app's own origin — the client-side check is defence in depth, never the only gate.
+- Tiles are `<a rel="noopener noreferrer" referrerpolicy="no-referrer" target="_blank">`. Dropping `noopener` hands the opened page `window.opener` and lets it navigate this app away (reverse tabnabbing).
+- **No logo assets in the REPO** — icons are fetched at runtime into `data/service_icons/` (gitignored), so the public repo still ships zero third-party marks and the app stays offline-capable after the first fetch. Custom services also get a stable accent hashed from their name, used behind/around the icon.
+- **Icon resolution order** (`_icon_candidates`): `/apple-touch-icon.png` → `/apple-touch-icon-precomposed.png` → homepage `<link rel="...icon...">` tags ranked by their `sizes` attribute (bare `apple-touch-icon` scores 180) → `/favicon.ico`. First candidate that returns an allow-listed image type wins. The HTML parse is load-bearing: Netflix serves nothing at the standard paths.
+- **User drop-in beats everything**: `data/service_icons/<id>.png` (user) is checked before `data/service_icons/auto/<id>.*` (fetched). Needed for Crunchyroll (serves no discoverable icon) and Prime Video (48px max). **Settings → Refresh Icons** clears the fetched cache and busts the browser's 7-day image cache (`iconBust` → `?t=`), otherwise a newly dropped-in file wouldn't appear for a week.
+- **`GET /api/service-icon/<id>`** fetches on first request, 404 = "render text only" (the `<img>` removes itself on error). **`DELETE`** clears only the *fetched* copy and the miss marker — never the user's file.
+- **SSRF is the real risk here `[HIGH]`** — the server fetches URLs derived from user-editable entries. `_host_is_public()` resolves the name and requires EVERY returned address to be public (`is_private`/`is_loopback`/`is_link_local`/`is_multicast`/`is_reserved`/`is_unspecified` all refused — `is_link_local` is what blocks `169.254.169.254`). Redirects are handled MANUALLY (`_NoRedirect`) so every hop is re-checked. https-only, 2MB cap, 4 redirects, 12s timeout, image content-type allow-list, 24h negative cache. **Do not "simplify" this by letting urllib follow redirects.**
+- Assistant: `open_streaming_service` (UI command) resolves exact name → id → partial name → hostname. The system prompt lists only *enabled* services so the model won't offer one you don't have; a hidden service is still launchable if you name it explicitly.
+
 ## z-index Layer Map
 ```
 Topbar (sticky):      20
@@ -219,12 +239,14 @@ Toast container:    9999
 ```
 
 ## Data Files (Never Commit, User-Specific)
-- `data/config.json` - media source paths (machine-specific)
+- `data/config.json` - media source paths, branding, AI key, **streaming launcher tiles** (machine-specific)
 - `data/theater.json` - current theater state (clips, loops, layouts)
 - `data/playlists.json` - saved playlists
 - `data/clip_names.json` - in-app display labels keyed by clip path (disk files never renamed; applied to /api/videos, /api/playlists, and ALL theater responses via `_theater_json()`)
 - `data/folder_layouts.json` - per-folder, per-clip popup geometry AND bento tile sizes (`tileCols`); saves MERGE, never overwrite
 - `data/thumbnails/` - generated poster frames
+- `data/service_icons/` - **your own** streaming icons, `<service-id>.png` (drop one in to override)
+- `data/service_icons/auto/` - fetched icon cache + `.miss` negative-cache markers
 
 ## Portability & Cross-Platform Transfer
 - No hardcoded paths in code (config-driven)
@@ -258,6 +280,7 @@ Toast container:    9999
 - **NEVER send function results as `role="tool"`** — newer models 400 with `Role 'tool' is not supported`. Use `role="user"` for the function-response parts (documented shape, works across versions).
 - **`applyRefresh()` must run BEFORE queued UI commands** in `assistant.js`. Otherwise a turn like "load playlist X and open the workspace" opens the workspace on the *old* clips.
 - **Layout design (v2.7.0)**: `set_tile_size` takes a LIST so the model composes a whole layout in one call; sizes are relative (`small`/`medium`/`large`/`hero`/`full`) and map to whole-tile multiples of `_theater_base_cols(count)`, mirroring `theaterDefaultCols` in app.js. `create_folder` deliberately returns `needs_location` + the available roots rather than guessing a drive.
+- **Streaming (v2.8.0)**: `open_streaming_service` launches a service in a new tab; `switch_view` gained `streaming`. `_streaming_names()` injects the *enabled* service names into the prompt so the model only offers configured ones, and the prompt states plainly that these can't play inside the app.
 - No destructive deletes via chat. Privacy: chat + library names are sent to Google Gemini.
 
 ## Dependencies

@@ -1,5 +1,33 @@
 # Changelog
 
+## v2.8.1 - 2026-07-31
+### Added
+- **Official app icons on the streaming tiles.** The server resolves each service's icon (standard `apple-touch-icon` paths → the homepage's declared `<link rel="icon">` tags, ranked by their `sizes` attribute → `favicon.ico`), downloads it once, and caches it in `data/service_icons/auto/`. Measured result across the 11 built-ins: **10 resolve**, 8 of them at 144–256px. The size-ranked HTML parse matters — Netflix serves *nothing* at the standard paths (only a `<link>` tag), and it lifted Disney+, Peacock and YouTube well above what their bare favicons would have given.
+- **Bring your own icon.** Drop a PNG named after the service id into `data/service_icons/` (e.g. `crunchyroll.png`) and it always beats the fetched copy — that's the fix for Crunchyroll (serves no discoverable icon) and Prime Video (48px, soft on a 4K display). A **Refresh Icons** button in Settings clears the fetched cache and busts the browser's 7-day image cache so a file you just dropped in shows up immediately.
+- Icons live entirely in `data/` (now gitignored), fetched by *your* install for *your* use — so the public repo still ships **zero third-party brand assets**, and the app stays offline-capable after the first fetch. Nothing is hotlinked at render time.
+
+### Security
+- **SSRF guard on the icon fetcher `[HIGH]`.** The server now fetches URLs derived from user-editable service entries, so a custom service pointed at `https://192.168.1.1/` would otherwise have the server request your router from inside the LAN. Every hostname is resolved and **every** address it returns must be public — `is_private`, `is_loopback`, `is_link_local` (this is what blocks the `169.254.169.254` cloud-metadata endpoint), `is_multicast`, `is_reserved` and `is_unspecified` are all refused, IPv4 and IPv6. Redirects are handled manually precisely so each hop is re-checked rather than trusted.
+- Fetches are https-only, capped at 2MB and 4 redirects with a 12s timeout, and the response content-type must be on an image allow-list — an HTML or JSON body is discarded, never cached. Cache filenames come from the already regex-validated service id, so there is no path-traversal surface.
+- Failed lookups are negatively cached for 24h, so a service with no icon can't cause a fetch storm on every page load.
+- Residual `[LOW]`: DNS rebinding between the resolve check and the connect. Closing it fully means pinning the resolved IP and connecting with an explicit `Host` header — not worth the machinery for a LAN-guarded local app, but noted.
+
+### Fixed
+- Tiles render text-only when no icon exists (the `<img>` removes itself on error), so a missing logo can never leave a broken-image box. Verified: Crunchyroll degraded cleanly before a drop-in was supplied.
+
+## v2.8.0 - 2026-07-31
+### Added
+- **Streaming view — launcher tiles for Netflix, Max, Disney+, Prime Video, Hulu, Apple TV+, Peacock, Paramount+, YouTube, Crunchyroll and Twitch.** A fourth top-level view (sidebar + mobile tab bar) that opens a service in a new tab. Tiles are brand-accent glass with the service name in the app's type scale — deliberately **no logo assets**, so the app stays offline-capable (nothing hotlinked), ships no third-party marks in a public repo, and matches the existing aesthetic. Everything is configurable in **Settings › Streaming**: hide any service, reorder with ↑/↓, re-point a URL (send Netflix to a profile, Max to a hub), or add your own. Custom services get a stable accent derived from their name so they don't all render identical cyan.
+- **`open_streaming_service` assistant tool.** "Open Netflix", "put on Crunchyroll" launch the service. Matching is exact name → id → partial name → hostname, so "disney" finds Disney+. The system prompt carries the *enabled* service names, so the assistant recommends only what you actually have configured, and is told plainly that these services can't be played inside the app so it never offers to. `switch_view` gained `streaming`.
+
+### Security
+- **URL validation is server-side, at a single write path.** `POST /api/streaming` replaces the whole list, so add / edit / reorder / hide all pass through one validator: **https only**, no embedded credentials, no control characters, 2048-char cap, max 100 services. A `javascript:` or `data:` URL here would be script execution in the app's own origin, so the browser-side check is deliberately *not* the only gate. The whole payload is rejected on any bad entry rather than partially saved. `_streaming_services()` (the read path) instead drops invalid entries silently, so a hand-edited `config.json` can never take the app down.
+- **Accent colours are validated to six-digit hex.** They land in an inline CSS custom property, where an arbitrary string is a CSS-injection vector.
+- **Every tile is an `<a rel="noopener noreferrer" referrerpolicy="no-referrer">`.** Without `noopener` the opened page receives `window.opener` and can navigate this app elsewhere (reverse tabnabbing). A real anchor also keeps middle-click, Ctrl-click and keyboard activation working.
+
+### Notes
+- **Netflix, Max and Disney+ cannot be embedded, and this is not a limitation that can be engineered around.** Measured: Netflix returns `X-Frame-Options: DENY`, Max returns `frame-ancestors 'none'` — both enforced by the browser, not the page. Independently, their playback runs through EME/Widevine, which binds licences to a verified player on an authorised origin, so even a frame that *loaded* would get no key. Deliberately circumventing that is DMCA §1201 territory. Hence launcher tiles, not embeds. YouTube, Vimeo and Twitch **do** publish embed endpoints (verified: no framing headers) if in-app embedding is ever wanted — that would be a separate feature with a `frame-src` CSP allowlist.
+
 ## v2.7.1 - 2026-07-31
 ### Added
 - **The assistant panel is draggable, not just the orb — and the orb travels with it.** Grab it anywhere on its chrome — header, notice strip, padding — and both move together by the same amount, keeping their spacing, so the button is never left stranded across the screen. Both positions persist per browser. The resize grip, the input, the buttons and the message list are excluded, so typing, sending and selecting text still work. A dragged panel stays where you put it instead of re-anchoring to the orb; double-clicking the orb clears both positions and restores the default corner.

@@ -6,8 +6,8 @@
   <title>My Collection</title><!-- updated dynamically by JS -->
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <!-- Bump ?v= whenever these files change (cache-busting; see QUICK_REFERENCE) -->
-  <link rel="stylesheet" href="/styles.css?v=2.7.1">
-  <link rel="stylesheet" href="/assistant.css?v=2.7.1">
+  <link rel="stylesheet" href="/styles.css?v=2.8.1">
+  <link rel="stylesheet" href="/assistant.css?v=2.8.1">
 </head>
 <body>
   <div id="app">
@@ -35,6 +35,9 @@
         </button>
         <button class="nav-btn" data-view="playlists" data-tooltip="Playlists">
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+        </button>
+        <button class="nav-btn" data-view="streaming" data-tooltip="Streaming">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 0 1 5.9 20"/><path d="M2 12.05A9 9 0 0 1 9.95 20"/><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
         </button>
       </nav>
 
@@ -201,6 +204,22 @@
           <p class="hint" id="brand-playlists-hint">Add clips to your Theater and save them as a playlist</p>
         </div>
       </section>
+
+      <!-- Streaming View -->
+      <section id="view-streaming" class="view">
+        <div class="theater-header">
+          <h2>
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 0 1 5.9 20"/><path d="M2 12.05A9 9 0 0 1 9.95 20"/><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
+            Streaming
+          </h2>
+        </div>
+        <div id="streaming-grid" class="streaming-grid"></div>
+        <div id="streaming-empty" class="empty-state hidden">
+          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" opacity="0.3"><path d="M2 16.1A5 5 0 0 1 5.9 20"/><path d="M2 12.05A9 9 0 0 1 9.95 20"/><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
+          <p>No services shown</p>
+          <p class="hint">Turn them back on in <strong>Settings &rsaquo; Streaming</strong></p>
+        </div>
+      </section>
     </main>
   </div>
 
@@ -291,6 +310,24 @@
             <button class="cyber-btn accent" id="ai-save-key">Save key</button>
             <button class="cyber-btn" id="ai-test-key">Test connection</button>
           </div>
+        </div>
+      </div>
+      <div class="settings-section">
+        <h4>Streaming</h4>
+        <p class="settings-hint">Tiles that open a service in a new tab. Netflix, Max and Disney+ refuse to be embedded (<code>X-Frame-Options</code>) and their DRM only plays on their own site — so these launch out rather than play in here.</p>
+        <p class="settings-hint">Icons are fetched once and cached in <code>data/service_icons/</code>. To use your own, drop a PNG named after the service id (e.g. <code>crunchyroll.png</code>) straight into that folder — it always wins — then hit Refresh Icons.</p>
+        <div id="streaming-settings-list" class="streaming-settings-list"></div>
+        <button class="cyber-btn" id="btn-refresh-icons" style="margin-top:var(--space-3);">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          Refresh Icons
+        </button>
+        <div class="settings-add-streaming">
+          <input type="text" id="streaming-name-input" placeholder="Name (e.g., Nebula)" />
+          <input type="text" id="streaming-url-input" placeholder="https://example.com" />
+          <button class="cyber-btn accent" id="btn-add-streaming">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Service
+          </button>
         </div>
       </div>
       <div class="settings-section">
@@ -456,6 +493,9 @@
     <button class="tab-btn" data-view="playlists" aria-label="Playlists">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
     </button>
+    <button class="tab-btn" data-view="streaming" aria-label="Streaming">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 16.1A5 5 0 0 1 5.9 20"/><path d="M2 12.05A9 9 0 0 1 9.95 20"/><path d="M2 8V6a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-6"/><line x1="2" y1="20" x2="2.01" y2="20"/></svg>
+    </button>
     <button class="tab-btn" id="tab-settings" aria-label="Settings">
       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
     </button>
@@ -469,7 +509,7 @@
     </div>
   </div>
 
-  <script src="/app.js?v=2.7.1"></script>
-  <script src="/assistant.js?v=2.7.1"></script>
+  <script src="/app.js?v=2.8.1"></script>
+  <script src="/assistant.js?v=2.8.1"></script>
 </body>
 </html>

@@ -1125,6 +1125,205 @@ html, body {
 
 .hidden { display: none !important; }
 
+/* ── Streaming Launcher Tiles ─────────────────────────────── */
+/* These OPEN a service in a new tab — nothing is embedded. Deliberately no logo
+   assets: brand accent + typography keeps the app offline-capable (no hotlinked
+   images), asset-free, and free of third-party marks in a public repo. */
+.streaming-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: var(--space-4);
+  padding-bottom: var(--space-6);
+}
+
+.streaming-tile {
+  --svc-accent: var(--cyan);
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  aspect-ratio: 16 / 10;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: linear-gradient(180deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+  color: var(--text-primary);
+  text-decoration: none;
+  overflow: hidden;
+  cursor: pointer;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}
+
+/* Brand wash. A separate layer (not color-mix) so an unsupported colour function
+   can never invalidate the tile's whole background. */
+.streaming-tile::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(125% 95% at 50% -10%, var(--svc-accent), transparent 70%);
+  opacity: .20;
+  transition: opacity .18s ease;
+  pointer-events: none;
+}
+
+.streaming-tile::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, transparent, var(--svc-accent), transparent);
+  opacity: .5;
+  pointer-events: none;
+}
+
+.streaming-tile:hover,
+.streaming-tile:focus-visible {
+  transform: translateY(-3px);
+  border-color: var(--svc-accent);
+  box-shadow: 0 12px 32px -14px var(--svc-accent);
+  outline: none;
+}
+
+.streaming-tile:hover::before,
+.streaming-tile:focus-visible::before { opacity: .36; }
+
+/* Fetched app icon. `margin-top: auto` keeps the name+host pinned to the bottom whether
+   or not the icon loaded, so a service without one sits flush with its neighbours. */
+.streaming-logo {
+  position: relative;
+  width: 46px;
+  height: 46px;
+  margin-top: auto;
+  margin-bottom: var(--space-3);
+  object-fit: contain;
+  border-radius: 10px;
+  filter: drop-shadow(0 3px 10px rgba(0, 0, 0, .55));
+}
+
+.streaming-name {
+  position: relative;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+}
+
+.streaming-host {
+  position: relative;
+  margin-top: var(--space-1);
+  font-size: 11px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.streaming-launch {
+  position: absolute;
+  top: var(--space-3);
+  right: var(--space-3);
+  color: var(--svc-accent);
+  opacity: 0;
+  transform: translate(-3px, 3px);
+  transition: opacity .18s ease, transform .18s ease;
+  pointer-events: none;
+}
+
+.streaming-tile:hover .streaming-launch,
+.streaming-tile:focus-visible .streaming-launch { opacity: 1; transform: none; }
+
+@media (prefers-reduced-motion: reduce) {
+  .streaming-tile,
+  .streaming-tile::before,
+  .streaming-launch { transition: none; }
+  .streaming-tile:hover,
+  .streaming-tile:focus-visible { transform: none; }
+}
+
+@media (max-width: 640px) {
+  .streaming-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: var(--space-3); }
+  .streaming-name { font-size: 15px; }
+  .streaming-logo { width: 36px; height: 36px; margin-bottom: var(--space-2); }
+}
+
+/* Settings > Streaming */
+.streaming-settings-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+.streaming-setting {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.streaming-setting.is-off { opacity: .42; }
+
+.streaming-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--svc-accent, var(--cyan));
+  flex-shrink: 0;
+}
+
+.streaming-setting-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.streaming-setting-name { font-size: 13px; font-weight: 500; }
+
+.streaming-setting-url {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: none;
+  font-family: inherit;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-overflow: ellipsis;
+}
+
+.streaming-setting-url:focus { color: var(--text-primary); outline: none; }
+
+.streaming-move {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.settings-add-streaming {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.settings-add-streaming input { flex: 1 1 150px; }
+
+.settings-hint code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 11px;
+}
+
 /* ── Modal ────────────────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
