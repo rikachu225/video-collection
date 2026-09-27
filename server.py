@@ -1614,7 +1614,8 @@ def _icon_miss_marker(service_id):
 # Fetched-cache files (icons, miss markers) that a clear could not remove. They are
 # still on disk but belong to what the service was before the clear, so they are never
 # served or trusted as a miss: the next lookup's write replaces them (os.replace drops
-# the path from here), or a later clear removes them. In memory only, so a restart
+# the path from here), the next committed lookup result sweeps them (_sweep_stale_icons),
+# or a later clear removes them. In memory only, so a restart
 # forgets them. Plain set operations, atomic under the GIL; no lock, because a write
 # that clears an entry runs while _icon_commit_lock is held.
 _icon_stale = set()
@@ -1651,7 +1652,7 @@ def _sweep_stale_icons(service_id, keep):
     a concurrent lookup has just made current."""
     for ext in _ICON_EXTS + (".miss",):
         path = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
-        if path != keep and path in _icon_stale:
+        if path not in keep and path in _icon_stale:
             _discard_icon_file(path)
 
 
@@ -1798,7 +1799,7 @@ def _fetch_service_icon(service, generation=None):
                 if not current:
                     return None            # re-pointed or refreshed meanwhile: stale result
                 _write_icon_atomically(target, body)
-                _sweep_stale_icons(service_id, keep=target)
+                _sweep_stale_icons(service_id, keep=(target, marker))   # marker: just below
         except OSError as e:
             _icon_write_failed(service_id, target.name, e)
             return None
@@ -1814,7 +1815,7 @@ def _fetch_service_icon(service, generation=None):
                 _write_icon_atomically(marker, _ICON_TIMEOUT_MISS if timed_out else b"")
             except OSError as e:
                 _icon_write_failed(service_id, marker.name, e)
-            _sweep_stale_icons(service_id, keep=marker)
+            _sweep_stale_icons(service_id, keep=(marker,))
     return None
 
 
