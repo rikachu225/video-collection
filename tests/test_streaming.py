@@ -464,6 +464,46 @@ def test_candidate_order_prefers_declared_sizes(tmp_path, monkeypatch):
     assert order[-1].endswith("/favicon.ico")               # bare favicon is last resort
 
 
+def test_icon_link_parsing_reads_real_world_markup(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    html = ('<LINK REL="Shortcut Icon" HREF="/fav.ico">'
+            '<link rel=icon href=/unquoted.png sizes=32x32>'
+            '<link rel="icon" href="/q.png?a=1&amp;b=2" sizes="16x16 48x48">'
+            '<link rel="apple-touch-icon-precomposed" href="/pre.png">'
+            '<link rel="mask-icon" href="/mask.svg">'
+            '<link rel="stylesheet" href="/icon.css">'
+            '<link rel="icon" sizes="' + "9" * 1500 + 'x1" href="/huge.png">'
+            '<link rel="icon" href="/too-long.png" data-x="' + "x" * 3000 + '">'
+            '<link rel="icon">')
+    assert server._icon_links(html) == [
+        (2, "/fav.ico"),
+        (32, "/unquoted.png"),
+        (48, "/q.png?a=1&b=2"),          # entities decoded; largest declared size ranks
+        (180, "/pre.png"),               # apple-touch without sizes
+        (2, "/huge.png"),                # absurd size ignored, no huge int()
+    ]                                    # mask-icon, stylesheet, over-long tag, no href: skipped
+
+
+@pytest.mark.parametrize("unit", ["<link rel=icon", "<link <a ", '<link rel="icon" href="'])
+def test_hostile_unterminated_link_markup_parses_quickly(tmp_path, monkeypatch, unit):
+    # The old regex was quadratic on this input (~217s for 400K chars), and so is a
+    # plain HTMLParser feed on 3.11.9 — either one freezes every waitress thread.
+    import time
+    server, _ = make_client(tmp_path, monkeypatch)
+    html = (unit * (400_000 // len(unit) + 1))[:400_000]
+    start = time.perf_counter()
+    assert server._icon_links(html) == []
+    assert time.perf_counter() - start < 2.0
+
+
+def test_icon_link_parsing_is_capped(tmp_path, monkeypatch):
+    server, _ = make_client(tmp_path, monkeypatch)
+    html = "".join(f'<link rel="icon" href="/i{n}.png">' for n in range(500))
+    links = server._icon_links(html)
+    assert len(links) == server.ICON_MAX_LINKS
+    assert links[0] == (2, "/i0.png")
+
+
 # ── AI assistant integration ──
 def test_open_streaming_service_is_a_registered_ui_command(tmp_path, monkeypatch):
     make_client(tmp_path, monkeypatch)

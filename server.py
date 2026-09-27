@@ -11,6 +11,7 @@ import re
 import shutil
 import mimetypes
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urlparse, urljoin
 from urllib.request import Request, build_opener, HTTPRedirectHandler
@@ -899,9 +900,73 @@ _ICON_TYPES = {
 }
 _ICON_EXTS = (".png", ".svg", ".webp", ".jpg", ".jpeg", ".ico", ".gif")
 
-_ICON_LINK_RE = re.compile(r'<link\b[^>]*\brel\s*=\s*["\'][^"\']*\bicon\b[^"\']*["\'][^>]*>', re.I)
-_HREF_RE = re.compile(r'\bhref\s*=\s*["\']([^"\']+)["\']', re.I)
-_SIZES_RE = re.compile(r'\bsizes\s*=\s*["\'](\d+)x\d+["\']', re.I)
+ICON_MAX_LINKS = 64               # icon-ish <link> tags parsed per page
+ICON_LINK_TAG_MAX = 2048          # a <link ...> longer than this is ignored
+_ICON_RELS = {"icon", "apple-touch-icon", "apple-touch-icon-precomposed"}
+_LINK_OPEN_RE = re.compile(r"<link\b", re.I)
+_ICON_SIZE_RE = re.compile(r"(\d{1,5})x\d{1,5}", re.I)
+
+
+class _LinkTagParser(HTMLParser):
+    """Collects the attributes of <link> start tags. Only ever fed one pre-cut tag."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.links = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "link":
+            fields = {}
+            for key, value in attrs:
+                fields.setdefault(key, value or "")     # first duplicate wins, as in browsers
+            self.links.append(fields)
+
+
+def _icon_links(html):
+    """(rank, href) for each icon <link> in a page, in page order. Linear in len(html).
+
+    The page is fetched from whatever host a service URL names, so it is hostile input.
+    HTMLParser is deliberately NOT fed the whole page: on some CPython releases (3.11.9
+    measured) an unterminated tag makes it rescan to the end of the input from every
+    later '<' — 100K chars of '<a ' took minutes — and parsing holds the GIL, which
+    stalls every waitress thread. So each '<link' is cut at the next '>' within
+    ICON_LINK_TAG_MAX chars and only that bounded fragment, which always ends in its
+    single '>', goes through the parser. Ranking: a declared `sizes` wins; an
+    apple-touch icon without one scores 180; a plain icon 2.
+    """
+    found, parsed, pos = [], 0, 0
+    while parsed < ICON_MAX_LINKS:
+        m = _LINK_OPEN_RE.search(html, pos)
+        if not m:
+            break
+        end = html.find(">", m.start(), m.start() + ICON_LINK_TAG_MAX)
+        if end < 0:
+            pos = m.end()
+            continue
+        pos = end + 1
+        fragment = html[m.start():end + 1]
+        if "icon" not in fragment.lower():
+            continue                         # stylesheet / preload / alternate: skip cheaply
+        parsed += 1
+        parser = _LinkTagParser()
+        try:
+            parser.feed(fragment)
+            parser.close()
+        except Exception:                    # _markupbase asserts on junk such as '<!['
+            continue
+        for attrs in parser.links:
+            rels = attrs.get("rel", "").lower().split()
+            href = attrs.get("href", "").strip()
+            if not href or not _ICON_RELS.intersection(rels):
+                continue
+            sizes = [int(sm.group(1)) for sm in
+                     (_ICON_SIZE_RE.fullmatch(tok) for tok in attrs.get("sizes", "").split()) if sm]
+            if sizes:
+                rank = max(sizes)
+            else:
+                rank = 180 if any(r.startswith("apple-touch-icon") for r in rels) else 2
+            found.append((rank, href))
+    return found
 
 
 class _NoRedirect(HTTPRedirectHandler):
@@ -1020,14 +1085,9 @@ def _icon_candidates(service_url):
     page = _icon_http_get(origin + "/", accept="text/html,*/*")
     if page and page[1].startswith("text/html"):
         html = page[2].decode("utf-8", "ignore")[:400_000]
-        for tag in _ICON_LINK_RE.findall(html):
-            href = _HREF_RE.search(tag)
-            if not href:
-                continue
-            size = _SIZES_RE.search(tag)
-            rank = int(size.group(1)) if size else (180 if "apple-touch" in tag.lower() else 2)
+        for rank, href in _icon_links(html):
             try:
-                ranked.append((rank, urljoin(page[0], href.group(1))))
+                ranked.append((rank, urljoin(page[0], href)))
             except ValueError:
                 continue
 
