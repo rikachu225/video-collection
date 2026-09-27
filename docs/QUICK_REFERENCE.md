@@ -38,7 +38,8 @@ Video Collection/
 ├── desktop.py             ← pywebview native window launcher (optional)
 ├── start_desktop.bat      ← Windows launcher for desktop mode
 ├── vlc_manager.py         ← VLC overlay manager (SHELVED - airspace problem)
-├── requirements.txt       ← flask, flask-cors, waitress, pywebview, yt-dlp
+├── requirements.txt       ← flask, waitress, pywebview, yt-dlp, google-genai (no flask-cors)
+├── requirements-dev.txt   ← pytest (test suite only)
 ├── .gitignore             ← venv/, __pycache__/, data/thumbnails/
 └── venv/                  ← Python virtual environment (never commit)
 ```
@@ -62,8 +63,8 @@ API Routes:
   GET  /api/branding                      ← Get custom site + theater names
   POST /api/branding                      ← Update custom names {siteName, theaterName}
   GET  /api/streaming                     ← Streaming launcher tiles (defaults merged with user list)
-  POST /api/streaming                     ← Replace whole list {services:[...]} (add/edit/reorder/hide)
-  GET  /api/service-icon/<id>             ← Service icon; fetches+caches on first hit (404 = text-only tile)
+  POST /api/streaming                     ← Replace whole list {services:[...]} (add/edit/reorder/hide); clears fetched icons of re-pointed/removed services
+  GET  /api/service-icon/<id>             ← Service icon; fetches+caches on first hit (404 = text-only tile); no-cache + strong ETag (304)
   DEL  /api/service-icon/<id>             ← Clear the FETCHED copy only (never the user's drop-in)
   GET  /api/sources                       ← List configured media roots
   POST /api/sources                      ← Add media root {name, path}
@@ -85,6 +86,12 @@ API Routes:
   POST /api/ai/config                    ← Set BYOK Gemini key / enabled / model
   POST /api/agent                        ← Run one assistant turn {message, history, context}
 ```
+
+### Request Guard (v2.8.3) — no CORS, by design
+- Two `before_request` guards, in order: `_lan_only` (remote IP must be loopback / RFC1918 / `fc00::/7`), then `_same_origin_only`. The IP check alone can't see browser-driven attacks: a page the user visits reaches the API from the user's own browser, i.e. from `127.0.0.1` or the LAN.
+- **No `CORS(app)` / flask-cors.** The SPA is served from the same origin and never needs it; a blanket CORS grant let any website read and write the API. Don't re-add it.
+- **Host allowlist (DNS rebinding)**: `localhost`, a loopback/private/link-local IP literal (IPv4 or bracketed IPv6), or this machine's own name — hostname, `<hostname>.local`, FQDN (`_own_hostnames()`, cached per process). Anything else → 403 `Unrecognised Host header`. Extra local names (router DNS alias, hosts-file entry): `VIDCOL_ALLOWED_HOSTS=media.lan,nas.home`, then restart.
+- **Writes** (`POST`/`PUT`/`PATCH`/`DELETE`): 403 when `Origin` is present and ≠ `request.scheme://Host`, or `Sec-Fetch-Site: cross-site`. No `Origin` (curl, scripts) → allowed; the IP guard still applies. Consequence: behind an HTTPS-terminating reverse proxy the scheme seen here is `http`, so browser writes would be refused.
 
 ### Frontend (app.js) State
 ```js
@@ -158,7 +165,14 @@ chmod +x install.sh start.sh
 # Manual
 python server.py             # Start on default port 7777
 python server.py 8080        # Start on custom port
+
+# Tests (never against a live install's data/)
+pip install -r requirements-dev.txt
+mkdir -p /tmp/vc-test-data                             # MUST exist: server.py mkdirs subfolders of it at import
+VIDCOL_DATA_DIR=/tmp/vc-test-data python -m pytest -q
 ```
+- Without `VIDCOL_DATA_DIR`, `test_agent_loop.py`, `test_agent_bento_tools.py` and `test_thumbnail_headers.py` write `cache/`, `remux_cache/` and `service_icons/auto/` into the checkout's `data/` (and `config.json` on first run), and read a live install's config.
+- **CI** (`.github/workflows/ci.yml`): ubuntu/windows/macos × Python 3.10/3.11/3.12, all steps under bash — imports, `py_compile`, a real `import server` + `GET /api/health` via the test client, then the full pytest suite. The secret scan matches key *value* shapes (not names like `GEMINI_API_KEY`) and fails the job; on a hit, remove the value AND rotate the key — git history keeps it.
 
 ## Keyboard Shortcuts
 - **Spacebar**: Play/pause video in popup modal or toggle all workspace videos
@@ -191,11 +205,13 @@ python server.py 8080        # Start on custom port
 - Bounds clamping: 50px minimum visible, top clamped at 0
 - Minimum panel size: 200x150px
 - z-index management: clicked panel goes to front
+- `wsUserArranged` (v2.8.3): set by a real drag/resize (in `mousemove`, so a click that only raises a panel doesn't count); blocks the late-metadata re-tile until the next `autoTileLayout()` (Tile button, assistant `bento_workspace`, workspace opened without a saved layout)
 
 ### Toast Notifications
 - z-index: 9999 (above all overlays including workspace at 500)
 - Auto-dismiss after 2.5s with fade animation
 - Types: info, success, error (color-coded left border)
+- `toast(message, type, action)` — optional `{label, href}` adds a real `<a target=_blank rel="noopener noreferrer">`. Action toasts take clicks (the container is `pointer-events: none`; `.toast.has-action` is not), last 10s, and close when the link is clicked. Only pass vetted https URLs.
 
 ### Bento Tile Sizing (v2.6.0)
 - Tile width = whole grid column spans; height is ALWAYS derived from the clip aspect (`bentoSpan`), which is what guarantees alignment. Only the integer span is stored.
@@ -204,22 +220,26 @@ python server.py 8080        # Start on custom port
 - **Browse grid is deliberately UNTOUCHED**; a card spans 1–3 whole cards (default 1 = today's card). Do NOT halve the track to get finer steps: `auto-fill` can yield an ODD track count, which narrows every card while tiles-per-row stays the same — the metric that matters is tile WIDTH, not tiles per row.
 - `bentoSpan(card, knownWidth)` — pass `knownWidth` during a resize drag; otherwise it measures `clientWidth`, which would be stale mid-drag without a forced reflow per frame.
 - **The resize handle must be nested inside the media box** (`.theater-video-wrap` / `.video-thumb`), never a direct child of the tile: `bentoSpan`'s chrome loop sums `offsetHeight` over non-media children, and an absolutely-positioned element still reports its height, so a card-level handle silently inflates every tile's row span.
-- Stored spans are clamped to the available track count at render time (narrow viewports) WITHOUT changing the user's stored choice.
+- Stored spans are clamped to the available track count at render time (narrow viewports) WITHOUT changing the user's stored choice. The window-resize handler re-derives column spans from that stored choice (`reapplyBentoCols`, v2.8.3) before row spans, so a narrower window re-clamps and a wider one restores. Hidden grids (no resolved tracks) and the tile being dragged are skipped; browse cards carry `data-path` for the `tileCols` lookup.
 - Persistence: `bentoCols` on theater clips (travels with playlists), `tileCols` in `folder_layouts.json` per folder. Layout writes MERGE on both server and client — one entry holds both popup geometry and tile size.
 
 ## Streaming Launcher Tiles (v2.8.0)
 - **Nothing is embedded, and that is not fixable.** Netflix returns `X-Frame-Options: DENY`; Max returns `frame-ancestors 'none'` — enforced by the *browser*, not the page, so no proxy or flag defeats it. Independently, their playback runs through EME/Widevine, which binds licences to a verified player on an authorised origin: even a frame that loaded gets no key. Circumventing that is DMCA §1201. **Do not re-attempt iframe embedding of Netflix/Max/Disney+/Prime.**
 - YouTube, Vimeo and Twitch *do* publish embed endpoints (verified: no framing headers). If in-app embedding is ever added it is a separate feature and needs a `frame-src` CSP allowlist — the app currently sets no CSP.
 - `_streaming_services()` is the single builder for reads: saved list wins, missing defaults are appended (so upgrades add new services without wiping customisations). A hidden service stays in the list with `enabled: false`, which is why it isn't resurrected; a service *deleted* from the list re-appears by design. Invalid entries are dropped on read so a hand-edited `config.json` can't crash the app.
-- `POST /api/streaming` replaces the **whole list** — add, edit, reorder and hide share one write path, so there is exactly one place URL validation happens. Invalid entry ⇒ the whole payload is rejected (no silent partial save).
+- **`_normalize_service()` is the ONE validator for reads AND saves** (v2.8.3): wrongly typed fields (non-string name/url/id, non-boolean `enabled`/`custom`) are dropped on read and a 400 on save, so anything a save accepts survives the next read. `_assign_service_ids()` claims explicit ids first, keeps derived ids off every shipped default id, and fits the `-N` de-dup suffix inside the 48-char limit.
+- `POST /api/streaming` replaces the **whole list** — add, edit, reorder and hide share one write path, so there is exactly one place URL validation happens. Invalid entry ⇒ the whole payload is rejected (no silent partial save); a non-object body ⇒ 400.
+- **Settings rows resolve their service by id at event time** (`currentStreamingService`, `moveStreaming(id, delta)`). Every persist swaps in fresh objects from the response, so a `svc` captured at render is stale after the first save — editing it changes nothing that gets posted.
 - **Validation is the security boundary**: https only, no embedded credentials, no control chars, ≤2048 chars, ≤100 services; accents must be six-digit hex (they land in an inline CSS custom property). A `javascript:`/`data:` URL here would be script execution in the app's own origin — the client-side check is defence in depth, never the only gate.
 - Tiles are `<a rel="noopener noreferrer" referrerpolicy="no-referrer" target="_blank">`. Dropping `noopener` hands the opened page `window.opener` and lets it navigate this app away (reverse tabnabbing).
 - **No logo assets in the REPO** — icons are fetched at runtime into `data/service_icons/` (gitignored), so the public repo still ships zero third-party marks and the app stays offline-capable after the first fetch. Custom services also get a stable accent hashed from their name, used behind/around the icon.
-- **Icon resolution order** (`_icon_candidates`): `/apple-touch-icon.png` → `/apple-touch-icon-precomposed.png` → homepage `<link rel="...icon...">` tags ranked by their `sizes` attribute (bare `apple-touch-icon` scores 180) → `/favicon.ico`. First candidate that returns an allow-listed image type wins. The HTML parse is load-bearing: Netflix serves nothing at the standard paths.
-- **User drop-in beats everything**: `data/service_icons/<id>.png` (user) is checked before `data/service_icons/auto/<id>.*` (fetched). Needed for Crunchyroll (serves no discoverable icon) and Prime Video (48px max). **Settings → Refresh Icons** clears the fetched cache and busts the browser's 7-day image cache (`iconBust` → `?t=`), otherwise a newly dropped-in file wouldn't appear for a week.
-- **`GET /api/service-icon/<id>`** fetches on first request, 404 = "render text only" (the `<img>` removes itself on error). **`DELETE`** clears only the *fetched* copy and the miss marker — never the user's file.
-- **SSRF is the real risk here `[HIGH]`** — the server fetches URLs derived from user-editable entries. `_host_is_public()` resolves the name and requires EVERY returned address to be public (`is_private`/`is_loopback`/`is_link_local`/`is_multicast`/`is_reserved`/`is_unspecified` all refused — `is_link_local` is what blocks `169.254.169.254`). Redirects are handled MANUALLY (`_NoRedirect`) so every hop is re-checked. https-only, 2MB cap, 4 redirects, 12s timeout, image content-type allow-list, 24h negative cache. **Do not "simplify" this by letting urllib follow redirects.**
-- Assistant: `open_streaming_service` (UI command) resolves exact name → id → partial name → hostname. The system prompt lists only *enabled* services so the model won't offer one you don't have; a hidden service is still launchable if you name it explicitly.
+- **Icon resolution order** (`_icon_candidates`): `/apple-touch-icon.png` → `/apple-touch-icon-precomposed.png` → homepage `<link rel="...icon...">` tags ranked by their `sizes` attribute (bare `apple-touch-icon` scores 180) → `/favicon.ico`. First candidate that returns an allow-listed image type wins. The HTML parse is load-bearing: Netflix serves nothing at the standard paths. At most `ICON_MAX_CANDIDATES` (8) per lookup, `/favicon.ico` always kept as the last resort; non-https hrefs don't take a slot.
+- **Never run a regex or a whole-document `HTMLParser` over fetched HTML** (v2.8.3). The page comes from whatever host a service URL names, so it is hostile input: the old `<link>` regexes were quadratic on unterminated tags, and whole-page `HTMLParser` is too on CPython 3.11.9 — both hold the GIL, so one crafted page stalls every waitress thread. `_icon_links()` cuts each `<link` at the next `>` within `ICON_LINK_TAG_MAX` (2048) chars and parses only that fragment, at most `ICON_MAX_LINKS` (64) icon tags per page.
+- **User drop-in beats everything**: `data/service_icons/<id>.png` (user) is checked before `data/service_icons/auto/<id>.*` (fetched). Needed for Crunchyroll (serves no discoverable icon) and Prime Video (48px max). **Settings → Refresh Icons** `DELETE`s the fetched copies and re-renders.
+- **`GET /api/service-icon/<id>`** fetches on first request, 404 = "render text only" (the `<img>` removes itself on error). Served `Cache-Control: no-cache` + a strong ETag over which file (drop-in vs fetched) + `st_size` + `st_mtime_ns`, so a refetched or newly dropped-in icon shows on the next render and an unchanged one costs a 304 — no client-side cache-bust needed (`iconBust`/`?t=` in app.js is now redundant but harmless; the route ignores the query). `nosniff` + the sandbox CSP stay on both 200 and 304. **`DELETE`** clears only the *fetched* copy and the miss marker (`_clear_fetched_icon`) — never the user's file.
+- **Icon cache writes**: `_write_icon_atomically()` = `mkstemp` beside the target (dot-prefixed, never matches a lookup) + `os.replace()`, so a failed write leaves nothing behind. A per-service-id lock (`_icon_lock`) re-checks the cache before fetching, so parallel first requests share one fetch. The cache is keyed by id, so `POST /api/streaming` clears the fetched icon + miss marker of any service whose **origin** changed or that was removed (a path-only change keeps it).
+- **SSRF is the real risk here `[HIGH]`** — the server fetches URLs derived from user-editable entries. `_host_is_public()` resolves the name and requires EVERY returned address to be public. `_is_public_ip()` needs BOTH `is_global` AND none of `is_private`/`is_loopback`/`is_link_local`/`is_multicast`/`is_reserved`/`is_unspecified`/`is_site_local`: the flags alone miss CGNAT `100.64.0.0/10` (Tailscale), and `is_global` alone is True on some Python versions for addresses that must be refused. `is_link_local` is what blocks `169.254.169.254`. `_embedded_ipv4()` unwraps IPv4-mapped, 6to4, Teredo (server + client) and NAT64 (`64:ff9b::/96`, `64:ff9b:1::/48`); a private embedded IPv4 makes the whole address non-public. Redirects are handled MANUALLY (`_NoRedirect`) so every hop is re-checked. https-only, 2MB cap, 4 redirects, 12s per socket operation, **20s `ICON_BUDGET` for the whole lookup** (homepage + candidates + redirects; bodies read with `read1()` in 64KB chunks with the deadline checked between them), truncated bodies refused, image content-type allow-list, 24h negative cache (a spent budget counts as a miss). **Do not "simplify" this by letting urllib follow redirects.**
+- Assistant: `open_streaming_service` (UI command) resolves exact name → id → partial name → hostname; an empty name matches nothing. `openStreamingService()` is async — it fetches `/api/streaming` (data only, no render) when `state.streamingServices` is empty, as on a fresh load. It calls `window.open` only while `navigator.userActivation.isActive`; otherwise it shows a toast with an **Open <service>** link. With `noopener`, `window.open` returns `null` even on success, so a null result never means "blocked". The system prompt lists only *enabled* services (as a JSON array) so the model won't offer one you don't have; a hidden service is still launchable if you name it explicitly.
 
 ## z-index Layer Map
 ```
@@ -246,7 +266,7 @@ Toast container:    9999
 - `data/folder_layouts.json` - per-folder, per-clip popup geometry AND bento tile sizes (`tileCols`); saves MERGE, never overwrite
 - `data/thumbnails/` - generated poster frames
 - `data/service_icons/` - **your own** streaming icons, `<service-id>.png` (drop one in to override)
-- `data/service_icons/auto/` - fetched icon cache + `.miss` negative-cache markers
+- `data/service_icons/auto/` - fetched icon cache + `.miss` negative-cache markers (written atomically; a stray `.<id>.*.tmp` is a crashed write and safe to delete)
 
 ## Portability & Cross-Platform Transfer
 - No hardcoded paths in code (config-driven)
@@ -269,7 +289,7 @@ Toast container:    9999
 
 ## AI Assistant (Gemini, BYOK)
 - Floating cyan orb (default bottom-right) → glass chat panel. Natural-language control: loops, playlists, downloads, theater/playback, search, Q&A.
-- **Movable + resizable (v2.4.0)**: drag the orb anywhere (click = open chat, >5px = drag); panel anchors to the orb and auto-flips to stay on-screen; top-left grip resizes the panel. Position/size persist in localStorage (`aiOrbPos`, `aiPanelSize`); double-click orb = reset to default corner.
+- **Movable + resizable (v2.4.0)**: drag the orb anywhere (click = open chat, >5px = drag); panel anchors to the orb and auto-flips to stay on-screen; top-left grip resizes the panel. Position/size persist in localStorage (`aiOrbPos`, `aiPanelSize`); double-click orb = reset to default corner. A dragged panel is pinned via `aiPanelPos`; resizing a pinned panel from the top-left grip also updates `aiPanelPos` (v2.8.3), or it jumps back on reopen/window resize.
 - **BYOK**: key resolves `GEMINI_API_KEY` env var first, then `geminiApiKey` in git-ignored `data/config.json`. End users paste their own key in **Settings → AI Assistant**; the key is never returned by the API.
 - Backend `ai_agent.py` (tool schema, system prompt, Gemini function-calling loop, executors). Frontend `static/assistant.js` + `static/assistant.css`. Model default `gemini-flash-latest` (auto-tracks newest flash; override in `aiAssistant.model`).
 - Two tool types: **server actions** (loops/playlists/downloads — reuse existing routes) and **UI commands** (play/pause/mute/workspace/switch-view — run by `app.js` globals). A per-request context snapshot resolves "the third clip", "this" (open clip), and "save this playlist" (loaded playlist); every reference is re-validated server-side.
@@ -278,20 +298,24 @@ Toast container:    9999
 - **Bulk add (v2.5.4)**: `add_to_theater` accepts `'all'`/`'everything'` → adds every video in the current folder via `_srv_add_many_to_theater()` (one load+save, dedupes, reports count/skipped).
 - **Model: `gemini-3.6-flash`** (pinned, v2.7.0). Chosen for multi-step tool calling (Terminal-Bench 2.1 78.0 vs 54 for the lite tier, ~17% fewer output tokens). `gemini-flash-latest` auto-tracks releases if you prefer that; override via `aiAssistant.model`.
 - **NEVER send function results as `role="tool"`** — newer models 400 with `Role 'tool' is not supported`. Use `role="user"` for the function-response parts (documented shape, works across versions).
-- **`applyRefresh()` must run BEFORE queued UI commands** in `assistant.js`. Otherwise a turn like "load playlist X and open the workspace" opens the workspace on the *old* clips.
+- **`applyRefresh()` must run BEFORE queued UI commands** in `assistant.js`. Otherwise a turn like "load playlist X and open the workspace" opens the workspace on the *old* clips. The UI commands are then **awaited one at a time**, in the model's order (v2.8.3): `open_streaming_service` may have to fetch the service list first.
 - **Layout design (v2.7.0)**: `set_tile_size` takes a LIST so the model composes a whole layout in one call; sizes are relative (`small`/`medium`/`large`/`hero`/`full`) and map to whole-tile multiples of `_theater_base_cols(count)`, mirroring `theaterDefaultCols` in app.js. `create_folder` deliberately returns `needs_location` + the available roots rather than guessing a drive.
-- **Streaming (v2.8.0)**: `open_streaming_service` launches a service in a new tab; `switch_view` gained `streaming`. `_streaming_names()` injects the *enabled* service names into the prompt so the model only offers configured ones, and the prompt states plainly that these can't play inside the app.
+- **Streaming (v2.8.0)**: `open_streaming_service` launches a service in a new tab; `switch_view` gained `streaming`. `_streaming_names()` injects the *enabled* service names into the prompt so the model only offers configured ones, and the prompt states plainly that these can't play inside the app. Names are user-editable, so they go in as a JSON array labelled as data (`json.dumps`), never as free text. `execute_tool` still just queues `open_streaming_service` without resolving the name — the frontend toast is the honest outcome.
 - No destructive deletes via chat. Privacy: chat + library names are sent to Google Gemini.
 
 ## Dependencies
+`requirements.txt` (exact):
 ```
 flask==3.1.3
-flask-cors==6.0.0
 waitress==3.0.2
-pywebview==6.2.1    # Optional: desktop native window mode
-yt-dlp==2026.3.17   # Optional: URL video downloads
-google-genai        # Optional: AI assistant (Gemini, BYOK)
+pywebview==6.2.1
+yt-dlp==2026.8.19
+google-genai==2.25.0
 ```
+- Optional at runtime: `pywebview` (desktop native window mode), `yt-dlp` (URL video downloads), `google-genai` (AI assistant, Gemini BYOK).
+- `requirements-dev.txt`: `pytest==9.1.1` (test suite only).
+- **No flask-cors** since v2.8.3 (see Request Guard). Older venvs may still have it installed; nothing imports it.
+
 No frontend dependencies. No build step. No npm.
 
 ## NEVER DO THESE
