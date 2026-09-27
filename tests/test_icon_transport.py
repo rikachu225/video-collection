@@ -131,6 +131,7 @@ class _IconSite:
         self.routes, self.requests = routes, []
         self.listener = socket.create_server(("127.0.0.1", 0))
         self.port = self.listener.getsockname()[1]
+        self._stop = threading.Event()
         self.thread = threading.Thread(target=self._serve, daemon=True)
         self.thread.start()
 
@@ -139,6 +140,9 @@ class _IconSite:
             try:
                 conn, _ = self.listener.accept()
             except OSError:                  # closed: the test is over
+                return
+            if self._stop.is_set():          # close()'s wake-up connection
+                conn.close()
                 return
             try:
                 with self.ctx.wrap_socket(conn, server_side=True) as tls:
@@ -159,8 +163,20 @@ class _IconSite:
                 pass
 
     def close(self):
+        # On Linux, closing a listening socket from another thread doesn't wake a thread
+        # blocked in accept(): connect once so it returns and sees the stop flag. A raw
+        # socket to the IP tuple, not create_connection: tests patch socket.getaddrinfo
+        # (_fake_dns), which would refuse 127.0.0.1 and leave accept() blocked.
+        self._stop.set()
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as wake:
+                wake.settimeout(1)
+                wake.connect(("127.0.0.1", self.port))
+        except OSError:
+            pass
         self.listener.close()
         self.thread.join(timeout=10)
+        assert not self.thread.is_alive(), "icon site thread did not stop"
 
 
 @pytest.fixture
