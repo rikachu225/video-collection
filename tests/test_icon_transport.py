@@ -28,6 +28,7 @@ from cryptography.x509.oid import NameOID  # noqa: E402
 DRIP_DELAY = 0.05          # seconds between bytes: far below any per-operation timeout
 BUDGET = 1.0               # the lookup deadline these tests set
 MARGIN = 1.0               # allowed overrun (thread scheduling, a slow CI runner)
+CONTROL_BUDGET = 30.0      # the non-drip controls aren't about timing
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
 
 
@@ -133,9 +134,9 @@ def tls_env(tmp_path, monkeypatch):
         srv.close()
 
 
-def _timed_get(server, url):
+def _timed_get(server, url, budget=BUDGET):
     start = time.monotonic()
-    got = server._icon_http_get(url, accept="image/*", deadline=start + BUDGET)
+    got = server._icon_http_get(url, accept="image/*", deadline=start + budget)
     return got, time.monotonic() - start
 
 
@@ -144,7 +145,7 @@ def test_the_real_transport_fetches_a_normal_response(tls_env):
     server, serve = tls_env
     srv = serve(head=(b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n"
                       b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(PNG)) + PNG)
-    got, _ = _timed_get(server, srv.url())
+    got, _ = _timed_get(server, srv.url(), CONTROL_BUDGET)
     assert got == (srv.url(), "image/png", PNG)
 
 
@@ -154,7 +155,7 @@ def test_a_chunked_response_is_read_over_the_real_transport(tls_env):
                     for i in range(0, len(PNG), 20)) + b"0\r\n\r\n"
     srv = serve(head=b"HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n"
                      b"Transfer-Encoding: chunked\r\n\r\n" + body)
-    assert _timed_get(server, srv.url())[0] == (srv.url(), "image/png", PNG)
+    assert _timed_get(server, srv.url(), CONTROL_BUDGET)[0] == (srv.url(), "image/png", PNG)
 
 
 @pytest.mark.parametrize("head,drip", [
