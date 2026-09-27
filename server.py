@@ -1214,7 +1214,10 @@ def _icon_http_get(url, accept="*/*", deadline=None):
                 url = urljoin(url, e.headers["Location"])
                 continue
             return None
-        except (URLError, OSError, ValueError):
+        except (URLError, OSError, ValueError, HTTPException):
+            # HTTPException: http.client raises it from getresponse() (bad or HTTP/2
+            # status line, too many or overlong headers) and from putrequest() for a path
+            # it refuses (InvalidURL, e.g. a space in an icon href) — not an OSError.
             return None
         try:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()

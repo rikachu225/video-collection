@@ -493,7 +493,8 @@ class _Wire(io.BytesIO):
 
 
 class _FakeTransport(urllib.request.HTTPSHandler):
-    """routes: {url: ("redirect", code, location) | ("ok", ctype, body[, on_read])}"""
+    """routes: {url | "*": ("redirect", code, location) | ("ok", ctype, body[, on_read])
+    | ("raw", status line + headers)}. "*" answers every URL not listed."""
     handler_order = 100                       # ahead of the stock HTTP handler too
 
     def __init__(self, routes, opened):
@@ -503,10 +504,12 @@ class _FakeTransport(urllib.request.HTTPSHandler):
     def https_open(self, req):
         url = req.full_url
         self.opened.append((url, req.timeout))
-        route = self.routes.get(url, ("status", 404))
+        route = self.routes.get(url) or self.routes.get("*", ("status", 404))
         on_read = None
         if route[0] == "redirect":
             head, body = f"HTTP/1.1 {route[1]} Moved\r\nLocation: {route[2]}\r\n", b""
+        elif route[0] == "raw":
+            head, body = route[1], b""
         elif route[0] == "ok":
             head, body = f"HTTP/1.1 200 OK\r\nContent-Type: {route[1]}\r\n", route[2]
             on_read = route[3] if len(route) > 3 else None
@@ -581,6 +584,36 @@ def test_the_redirect_chain_is_capped(tmp_path, monkeypatch):
     opened = _fake_network(server, monkeypatch, routes)
     assert server._icon_http_get("https://public.example/0") is None
     assert len(opened) == server.ICON_MAX_REDIRECTS + 1
+
+
+@pytest.mark.parametrize("head", [
+    "HTTP/2 200 OK\r\nContent-Type: image/png\r\n",                 # UnknownProtocol
+    "NOT-HTTP\r\n",                                                 # BadStatusLine
+    "HTTP/1.1 200 OK\r\n" + "X-Pad: 1\r\n" * 101,                   # more than 100 headers
+    "HTTP/1.1 200 OK\r\nX-Pad: " + "a" * 70_000 + "\r\n",           # LineTooLong
+], ids=["http2-status", "bad-status-line", "too-many-headers", "header-too-long"])
+def test_a_malformed_response_head_is_a_miss_not_a_500(tmp_path, monkeypatch, head):
+    # http.client raises these from getresponse(), inside opener.open(), and they are
+    # HTTPException, not OSError: they used to escape as a 500, with no miss marker, so
+    # every tile render repeated the lookup.
+    server, client = make_client(tmp_path, monkeypatch)
+    _post(client, [{"id": "hostile", "name": "Hostile", "url": "https://public.example/",
+                    "custom": True}])
+    opened = _fake_network(server, monkeypatch, {"*": ("raw", head)})
+    assert client.get("/api/service-icon/hostile").status_code == 404
+    assert server._icon_miss_marker("hostile").exists()
+    tried = len(opened)
+    assert tried >= 2                          # the homepage and at least one candidate
+    assert client.get("/api/service-icon/hostile").status_code == 404
+    assert len(opened) == tried                # negatively cached like any other miss
+
+
+def test_a_url_http_client_refuses_is_a_failed_candidate_not_a_500(tmp_path, monkeypatch):
+    # A space in an icon href (sloppy markup; browsers percent-encode it) makes
+    # http.client raise InvalidURL, an HTTPException, before anything is connected.
+    server, _ = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(server, "_host_is_public", lambda host: True)
+    assert server._icon_http_get("https://127.0.0.1:9/my icon.png") is None
 
 
 def test_a_body_over_the_size_cap_is_refused(tmp_path, monkeypatch):
