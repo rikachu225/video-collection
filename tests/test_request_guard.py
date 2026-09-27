@@ -118,7 +118,7 @@ def test_a_cross_site_or_same_site_api_request_is_refused(tmp_path, monkeypatch,
     (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
     calls = []
     monkeypatch.setattr(server, "_icon_http_get",
-                        lambda url, accept="*/*", deadline=None: calls.append(url) or None)
+                        lambda url, accept="*/*", deadline=None, lookup=None: calls.append(url) or None)
     res = client.open(path, method=method, json=HIJACK if method == "POST" else None,
                       headers={"Sec-Fetch-Site": site, "Sec-Fetch-Mode": "no-cors",
                                "Sec-Fetch-Dest": "image"})

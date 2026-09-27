@@ -6,9 +6,13 @@ every recv only has the per-operation socket timeout, so a server that sends one
 at a time never trips it. These tests run a throwaway TLS server on 127.0.0.1 (a random
 free port) that drips its reply, and call the fetch layer directly.
 
-Only two things are swapped in: the SSRF host check (it refuses 127.0.0.1, by design)
-and the trust store (a certificate generated per test run; no key material is kept in
-the repo). The connection, TLS and HTTP parsing are the production code paths.
+Only two things are swapped in: the SSRF address classifier (_is_public_ip refuses
+127.0.0.1, by design, and both the pre-check and the connect ask it) and the trust store
+(a certificate generated per test run; no key material is kept in the repo). The
+connection, TLS and HTTP parsing are the production code paths.
+
+The SSRF tests at the end keep the real classifier, answer DNS from a table, and record
+and refuse every dial, so nothing is ever sent anywhere.
 """
 import datetime
 import importlib
@@ -119,7 +123,7 @@ class _DripServer:
 def tls_env(tmp_path, monkeypatch):
     server = make_server(tmp_path, monkeypatch)
     cert, key = _self_signed(tmp_path)
-    monkeypatch.setattr(server, "_host_is_public", lambda host: True)   # 127.0.0.1 is private
+    monkeypatch.setattr(server, "_is_public_ip", lambda ip: True)   # 127.0.0.1 is private
     monkeypatch.setattr(server, "_icon_tls_context",
                         lambda: ssl.create_default_context(cafile=str(cert)))
     started = []
@@ -191,3 +195,114 @@ def test_an_expired_deadline_never_reads_again(tls_env):
         server._icon_op_timeout(time.monotonic() - 0.001)
     assert server._icon_op_timeout(None) == server.ICON_TIMEOUT
     assert 0 < server._icon_op_timeout(time.monotonic() + 0.5) <= 0.5
+
+
+# ── SSRF: the address checked is the address dialled ──
+@pytest.fixture
+def no_dial(tmp_path, monkeypatch):
+    """The real SSRF checks. Every dial is recorded and refused: nothing leaves the host."""
+    server = make_server(tmp_path, monkeypatch)
+    dials = []
+
+    def refuse(sock, sockaddr):
+        dials.append(sockaddr[0])
+        raise ConnectionRefusedError("test: dials are recorded, never made")
+
+    monkeypatch.setattr(server._DeadlineSocket, "connect", refuse)
+    return server, dials
+
+
+def _addrinfo(ip, port):
+    if ":" in ip:
+        return (socket.AF_INET6, socket.SOCK_STREAM, 6, "", (ip, port or 0, 0, 0))
+    return (socket.AF_INET, socket.SOCK_STREAM, 6, "", (ip, port or 0))
+
+
+def _fake_dns(server, monkeypatch, table):
+    """table: {host: [ip, ...] | callable(nth_query) -> [ip, ...]}. Returns the hosts asked."""
+    asked = []
+
+    def getaddrinfo(host, port, *args, **kwargs):
+        asked.append(host)
+        if host not in table:
+            raise socket.gaierror(socket.EAI_NONAME, "unknown host")
+        ips = table[host]
+        if callable(ips):
+            ips = ips(asked.count(host))
+        return [_addrinfo(ip, port) for ip in ips]
+
+    monkeypatch.setattr(server.socket, "getaddrinfo", getaddrinfo)
+    return asked
+
+
+def test_a_name_that_rebinds_after_the_check_is_only_dialled_at_the_checked_address(
+        no_dial, monkeypatch):
+    # DNS rebinding: public for the SSRF check, loopback a moment later for the connect.
+    # One lookup resolves each host once, and the connect dials that same answer.
+    server, dials = no_dial
+    asked = _fake_dns(server, monkeypatch, {
+        "rebind.test": lambda nth: ["93.184.216.34"] if nth == 1 else ["127.0.0.1"]})
+    got = server._icon_http_get("https://rebind.test/icon.png",
+                                deadline=time.monotonic() + CONTROL_BUDGET)
+    assert got is None
+    assert asked == ["rebind.test"]
+    assert dials == ["93.184.216.34"]
+
+
+@pytest.mark.parametrize("ips", [
+    ["127.0.0.1"],
+    ["192.168.1.10"],
+    ["100.101.102.103"],                       # CGNAT (Tailscale)
+    ["93.184.216.34", "192.168.1.10"],         # one public, one private: refused outright
+    ["2606:4700:4700::1111", "::1"],
+], ids=["loopback", "rfc1918", "cgnat", "mixed-v4", "mixed-v6"])
+def test_the_connect_refuses_a_host_unless_every_address_is_public(no_dial, monkeypatch, ips):
+    # The connect checks the answer it dials, whatever the pre-check was asked about.
+    server, dials = no_dial
+    _fake_dns(server, monkeypatch, {"lan.test": ips})
+    with pytest.raises(OSError):
+        server._icon_connect(("lan.test", 443), time.monotonic() + CONTROL_BUDGET,
+                             server._IconLookup())
+    assert dials == []
+
+
+def test_a_percent_encoded_host_is_refused_before_it_resolves(no_dial, monkeypatch):
+    # urlparse() keeps %2e in the host, but urllib connects to the unquoted name: with a
+    # resolver that answers the literal label, the check passed for one name and the
+    # connect dialled another.
+    server, dials = no_dial
+    asked = _fake_dns(server, monkeypatch, {"a%2eprivate.test": ["93.184.216.34"],
+                                            "a.private.test": ["127.0.0.1"]})
+    got = server._icon_http_get("https://a%2eprivate.test/icon.png",
+                                deadline=time.monotonic() + CONTROL_BUDGET)
+    assert got is None
+    assert asked == [] and dials == []
+
+
+def test_a_resolver_that_never_answers_is_abandoned_at_the_deadline(no_dial, monkeypatch):
+    # getaddrinfo takes no timeout. A DNS server that never answers (internet down, LAN
+    # up) used to hold the request for the OS resolver's timeout, per hop, twice.
+    server, dials = no_dial
+    release = threading.Event()
+
+    def hang(host, *args, **kwargs):
+        release.wait(30)
+        return [_addrinfo("127.0.0.1", 443)]        # a late answer, private at that
+
+    monkeypatch.setattr(server.socket, "getaddrinfo", hang)
+    lookup = server._IconLookup()
+    start = time.monotonic()
+    try:
+        got = server._icon_http_get("https://hang.test/icon.png", deadline=start + BUDGET,
+                                    lookup=lookup)
+        elapsed = time.monotonic() - start
+    finally:
+        release.set()
+        for thread in threading.enumerate():
+            if thread.name == "icon-dns":
+                thread.join(10)
+    assert got is None
+    assert elapsed < BUDGET + MARGIN, f"lookup ran {elapsed:.2f}s past a {BUDGET}s budget"
+    with pytest.raises(TimeoutError):                # the late answer was dropped
+        lookup.resolve("hang.test")
+    assert dials == []

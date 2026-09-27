@@ -1164,18 +1164,8 @@ def _is_public_ip(ip):
     return all(_is_public_ip(v4) for v4 in _embedded_ipv4(ip))
 
 
-def _host_is_public(hostname):
-    """SSRF guard. EVERY address the name resolves to must be public — a name with one
-    public and one private A record must not pass.
-
-    Residual risk [LOW]: DNS rebinding between this check and the connect. Closing that
-    fully means pinning the resolved IP and connecting to it with an explicit Host
-    header; not worth the machinery for a LAN-guarded local app.
-    """
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except (socket.gaierror, UnicodeError, OSError):
-        return False
+def _all_public(infos):
+    """True if getaddrinfo() returned at least one address and every one is public."""
     if not infos:
         return False
     for info in infos:
@@ -1189,6 +1179,79 @@ def _host_is_public(hostname):
 
 def _icon_time_left(deadline):
     return float("inf") if deadline is None else deadline - _icon_clock()
+
+
+def _icon_getaddrinfo(host, deadline):
+    """socket.getaddrinfo(host) for TCP, given at most the time left in the lookup.
+
+    getaddrinfo takes no timeout and can't be interrupted, so with a deadline it runs
+    in a daemon thread and the caller stops waiting when the budget is spent (a DNS
+    server that never answers, or the internet down with the LAN up). An answer that
+    arrives later is dropped with the thread; nothing reads it."""
+    def resolve():
+        return socket.getaddrinfo(host, None, 0, socket.SOCK_STREAM)
+
+    if deadline is None:
+        return resolve()
+    left = _icon_time_left(deadline)
+    if left <= 0:
+        raise TimeoutError(f"no time left to resolve {host}")
+    outcome, done = [], threading.Event()
+
+    def run():
+        try:
+            outcome.append((True, resolve()))
+        except Exception as e:                # handed to the caller, never raised here
+            outcome.append((False, e))
+        finally:
+            done.set()
+
+    threading.Thread(target=run, name="icon-dns", daemon=True).start()
+    if not done.wait(left):
+        raise TimeoutError(f"resolving {host} outlasted the icon lookup budget")
+    ok, value = outcome[0]
+    if not ok:
+        raise value
+    return value
+
+
+class _IconLookup:
+    """Name resolution for ONE icon lookup (homepage, candidates, redirects).
+
+    Each host is resolved once, and the SSRF pre-check (_host_is_public) and the connect
+    (_icon_connect) both read that one answer, so a second DNS answer (rebinding) can't
+    reach the dial. A failure is remembered too: when the service's host doesn't
+    resolve, its other candidates fail at once instead of each waiting on DNS again.
+    """
+
+    def __init__(self):
+        self._answers = {}
+
+    def resolve(self, host, deadline=None):
+        key = host.lower()
+        if key not in self._answers:
+            try:
+                self._answers[key] = _icon_getaddrinfo(host, deadline)
+            except (OSError, ValueError) as e:  # gaierror, timeout, bad IDNA label
+                self._answers[key] = e
+        answer = self._answers[key]
+        if isinstance(answer, Exception):
+            raise answer
+        return answer
+
+
+def _host_is_public(hostname, lookup=None, deadline=None):
+    """SSRF pre-check. EVERY address the name resolves to must be public — a name with
+    one public and one private A record must not pass.
+
+    `lookup` shares this answer with the connect, which dials only these addresses and
+    checks them again (see _icon_connect), so DNS rebinding between the two is closed.
+    """
+    try:
+        infos = (lookup if lookup is not None else _IconLookup()).resolve(hostname, deadline)
+    except (OSError, ValueError):
+        return False
+    return _all_public(infos)
 
 
 ICON_MIN_OP_TIMEOUT = 0.01         # never 0: settimeout(0) would mean non-blocking
@@ -1247,18 +1310,29 @@ class _DeadlineSSLSocket(_DeadlineSocketMixin, ssl.SSLSocket):
         return super().do_handshake(*args, **kwargs)
 
 
-def _icon_connect(address, deadline):
-    """socket.create_connection, but every address shares the lookup deadline instead of
-    each getting a full timeout of its own (a name with many unreachable addresses)."""
+def _icon_connect(address, deadline, lookup, public_only=True):
+    """socket.create_connection for one icon lookup.
+
+    Dials only the answer `lookup` holds for the host, the one the SSRF pre-check saw,
+    and refuses the connection unless EVERY address in it is public. So the address
+    checked is the address dialled, whatever a second DNS answer (rebinding) or a
+    differently spelled host would give: urllib unquotes %XX in the host it connects
+    to, while the pre-check reads urlparse(), which doesn't. `public_only` is off only
+    for the hop to an https proxy, which may sit on the LAN; the pre-check has then
+    checked the target, and the proxy resolves it. Every address shares the lookup
+    deadline instead of each getting a full timeout of its own.
+    """
     host, port = address
+    infos = lookup.resolve(host, deadline)
+    if public_only and not _all_public(infos):
+        raise OSError(f"refusing to connect: {host} resolves to a non-public address")
     err = OSError(f"no address for {host}")
-    for family, socktype, proto, _, sockaddr in socket.getaddrinfo(host, port, 0,
-                                                                   socket.SOCK_STREAM):
+    for family, socktype, proto, _, sockaddr in infos:
         timeout = _icon_op_timeout(deadline)          # raises once the budget is spent
         sock = _DeadlineSocket(family, socktype, proto)
         try:
             sock.settimeout(timeout)
-            sock.connect(sockaddr)
+            sock.connect((sockaddr[0], port) + tuple(sockaddr[2:]))
         except OSError as e:
             sock.close()
             err = e
@@ -1279,14 +1353,16 @@ def _icon_tls_context():
 class _DeadlineHTTPSConnection(HTTPSConnection):
     """HTTPSConnection whose sockets take every timeout from the lookup deadline."""
 
-    def __init__(self, host, *, deadline, context, **kwargs):
+    def __init__(self, host, *, deadline, context, lookup, **kwargs):
         context.sslsocket_class = _DeadlineSSLSocket
         super().__init__(host, context=context, **kwargs)
         self._icon_deadline = deadline
         self._icon_context = context
+        self._icon_lookup = lookup
 
     def connect(self):
-        self.sock = _icon_connect((self.host, self.port), self._icon_deadline)
+        self.sock = _icon_connect((self.host, self.port), self._icon_deadline,
+                                  self._icon_lookup, public_only=not self._tunnel_host)
         if self._tunnel_host:                  # an https proxy (environment / system settings)
             self._tunnel()
         tls = self._icon_context.wrap_socket(
@@ -1298,13 +1374,14 @@ class _DeadlineHTTPSConnection(HTTPSConnection):
 
 
 class _DeadlineHTTPSHandler(HTTPSHandler):
-    def __init__(self, deadline):
+    def __init__(self, deadline, lookup):
         super().__init__()
         self._icon_deadline = deadline
+        self._icon_lookup = lookup
 
     def https_open(self, req):
         return self.do_open(partial(_DeadlineHTTPSConnection, deadline=self._icon_deadline,
-                                    context=_icon_tls_context()), req)
+                                    context=_icon_tls_context(), lookup=self._icon_lookup), req)
 
 
 def _read_icon_body(resp, deadline):
@@ -1332,17 +1409,19 @@ def _read_icon_body(resp, deadline):
             return None
 
 
-def _icon_http_get(url, accept="*/*", deadline=None):
+def _icon_http_get(url, accept="*/*", deadline=None, lookup=None):
     """GET over https with manual redirect handling. Returns (final_url, ctype, body).
 
-    `deadline` (an _icon_clock() value) bounds the whole call on every hop: connect, TLS
-    handshake, request, status line, headers and body (_DeadlineHTTPSConnection gives
-    each blocking socket call only the time left). ICON_TIMEOUT alone is per socket
-    call, so without it a slow-drip server could hold a worker thread indefinitely.
-    Not covered: DNS resolution (getaddrinfo takes no timeout; the OS resolver's own
-    timeout bounds it).
+    `deadline` (an _icon_clock() value) bounds the whole call on every hop: DNS
+    (_icon_getaddrinfo), connect, TLS handshake, request, status line, headers and body
+    (_DeadlineHTTPSConnection gives each blocking socket call only the time left).
+    ICON_TIMEOUT alone is per socket call, so without it a slow-drip server could hold
+    a worker thread indefinitely. `lookup` (_IconLookup) holds the DNS answers of the
+    whole icon lookup this GET belongs to; a GET on its own gets a fresh one.
     """
-    opener = build_opener(_NoRedirect, _DeadlineHTTPSHandler(deadline))
+    if lookup is None:
+        lookup = _IconLookup()
+    opener = build_opener(_NoRedirect, _DeadlineHTTPSHandler(deadline, lookup))
     for _ in range(ICON_MAX_REDIRECTS + 1):
         remaining = _icon_time_left(deadline)
         if remaining <= 0:
@@ -1350,7 +1429,9 @@ def _icon_http_get(url, accept="*/*", deadline=None):
         parsed = urlparse(url)
         if parsed.scheme != "https" or not parsed.hostname:
             return None
-        if not _host_is_public(parsed.hostname):
+        # No DNS name contains '%'. urlparse keeps %XX in the host but urllib connects to
+        # the unquoted one, so the name checked here and the name dialled would differ.
+        if "%" in parsed.hostname or not _host_is_public(parsed.hostname, lookup, deadline):
             return None
         req = Request(url, headers={"User-Agent": _ICON_UA, "Accept": accept})
         try:
@@ -1378,7 +1459,7 @@ def _icon_http_get(url, accept="*/*", deadline=None):
     return None
 
 
-def _icon_candidates(service_url, deadline=None):
+def _icon_candidates(service_url, deadline=None, lookup=None):
     """Icon URLs to try, best-declared-quality first. At most ICON_MAX_CANDIDATES.
 
     Everything is sorted by rank: a page <link> ranks by its declared `sizes` (a bare
@@ -1402,7 +1483,7 @@ def _icon_candidates(service_url, deadline=None):
     ]
     ranked = list(standard)
 
-    page = _icon_http_get(origin + "/", accept="text/html,*/*", deadline=deadline)
+    page = _icon_http_get(origin + "/", accept="text/html,*/*", deadline=deadline, lookup=lookup)
     if page and page[1].startswith("text/html"):
         html = page[2].decode("utf-8", "ignore")[:400_000]
         for rank, href in _icon_links(html):
@@ -1556,10 +1637,11 @@ def _fetch_service_icon(service, generation=None):
             pass
 
     deadline = _icon_clock() + ICON_BUDGET
-    for url in _icon_candidates(service["url"], deadline=deadline):
+    lookup = _IconLookup()                 # one DNS answer per host for the whole lookup
+    for url in _icon_candidates(service["url"], deadline=deadline, lookup=lookup):
         if _icon_time_left(deadline) <= 0:
             break
-        got = _icon_http_get(url, accept="image/*,*/*", deadline=deadline)
+        got = _icon_http_get(url, accept="image/*,*/*", deadline=deadline, lookup=lookup)
         if not got:
             continue
         _, ctype, body = got

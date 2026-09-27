@@ -581,6 +581,24 @@ def test_a_redirect_is_rechecked_before_it_is_followed(tmp_path, monkeypatch, ta
     assert [u for u, _ in opened] == ["https://public.example/icon.png"]
 
 
+def test_a_host_that_does_not_resolve_is_asked_once_per_lookup(tmp_path, monkeypatch):
+    # DNS down (internet out, LAN up): every candidate is on the service's own host, and
+    # each used to ask the resolver again and wait out its timeout again.
+    server, _ = make_client(tmp_path, monkeypatch)
+    opened = _fake_network(server, monkeypatch, {})
+    asked = []
+
+    def down(host, *args, **kwargs):
+        asked.append(host)
+        raise socket.gaierror(socket.EAI_NONAME, "no DNS")
+
+    monkeypatch.setattr(server.socket, "getaddrinfo", down)
+    assert server._fetch_service_icon({"id": "netflix",
+                                       "url": "https://www.netflix.com/browse"}) is None
+    assert asked == ["www.netflix.com"]
+    assert opened == []
+
+
 def test_a_redirect_to_another_public_https_host_is_followed(tmp_path, monkeypatch):
     server, _ = make_client(tmp_path, monkeypatch)
     _fake_network(server, monkeypatch, {
@@ -627,7 +645,7 @@ def test_a_url_http_client_refuses_is_a_failed_candidate_not_a_500(tmp_path, mon
     # A space in an icon href (sloppy markup; browsers percent-encode it) makes
     # http.client raise InvalidURL, an HTTPException, before anything is connected.
     server, _ = make_client(tmp_path, monkeypatch)
-    monkeypatch.setattr(server, "_host_is_public", lambda host: True)
+    monkeypatch.setattr(server, "_host_is_public", lambda host, *args, **kwargs: True)
     assert server._icon_http_get("https://127.0.0.1:9/my icon.png") is None
 
 
@@ -718,7 +736,7 @@ def test_one_lookup_tries_a_bounded_number_of_candidates(tmp_path, monkeypatch):
                    for n in range(500)).encode()
     calls = []
 
-    def fake(url, accept="*/*", deadline=None):
+    def fake(url, accept="*/*", deadline=None, lookup=None):
         calls.append(url)
         return (url, "text/html", page) if url == "https://www.netflix.com/" else None
 
@@ -735,7 +753,7 @@ def test_one_lookup_stops_when_the_overall_budget_is_spent(tmp_path, monkeypatch
     now = _fake_clock(server, monkeypatch)
     calls = []
 
-    def slow(url, accept="*/*", deadline=None):
+    def slow(url, accept="*/*", deadline=None, lookup=None):
         assert deadline is not None and deadline <= 1000.0 + server.ICON_BUDGET
         calls.append(url)
         now[0] += 7                          # every hop burns 7 "seconds"
@@ -750,7 +768,7 @@ def test_one_lookup_stops_when_the_overall_budget_is_spent(tmp_path, monkeypatch
 # ── Service icons: caching, overrides, content types ──
 def _fake_fetch(mapping):
     """Stub for _icon_http_get: {url_substring: (ctype, body)}."""
-    def inner(url, accept="*/*", deadline=None):
+    def inner(url, accept="*/*", deadline=None, lookup=None):
         for key, (ctype, body) in mapping.items():
             if key in url:
                 return (url, ctype, body)
@@ -786,7 +804,7 @@ def test_a_hidden_or_unknown_service_is_never_looked_up(tmp_path, monkeypatch):
     assert _post(client, services).status_code == 200
     calls = []
     monkeypatch.setattr(server, "_icon_http_get",
-                        lambda url, accept="*/*", deadline=None: calls.append(url) or None)
+                        lambda url, accept="*/*", deadline=None, lookup=None: calls.append(url) or None)
 
     for sid in ("crunchyroll", "private-site", "guess-miss"):
         assert client.get(f"/api/service-icon/{sid}").status_code == 404
@@ -815,7 +833,7 @@ def test_icon_is_fetched_and_cached_then_served_from_disk(tmp_path, monkeypatch)
     server, client = make_client(tmp_path, monkeypatch)
     calls = []
 
-    def counting(url, accept="*/*", deadline=None):
+    def counting(url, accept="*/*", deadline=None, lookup=None):
         calls.append(url)
         return (url, "image/png", PNG) if "apple-touch-icon.png" in url else None
 
@@ -849,7 +867,7 @@ def test_a_failed_lookup_is_negatively_cached(tmp_path, monkeypatch):
     server, client = make_client(tmp_path, monkeypatch)
     calls = []
     monkeypatch.setattr(server, "_icon_http_get",
-                        lambda url, accept="*/*", deadline=None: calls.append(url) or None)
+                        lambda url, accept="*/*", deadline=None, lookup=None: calls.append(url) or None)
     assert client.get("/api/service-icon/netflix").status_code == 404
     assert server._icon_miss_marker("netflix").exists()
     first = len(calls)
@@ -919,7 +937,7 @@ def test_parallel_first_requests_share_one_fetch(tmp_path, monkeypatch):
     server, _ = make_client(tmp_path, monkeypatch)
     calls, calls_lock = [], threading.Lock()
 
-    def slow(url, accept="*/*", deadline=None):
+    def slow(url, accept="*/*", deadline=None, lookup=None):
         with calls_lock:
             calls.append(url)
         time.sleep(0.2)
@@ -1094,7 +1112,7 @@ def _blocking_fetch(old_lookup_finds_icon):
     import threading
     in_flight, release, calls = threading.Event(), threading.Event(), []
 
-    def fetch(url, accept="*/*", deadline=None):
+    def fetch(url, accept="*/*", deadline=None, lookup=None):
         calls.append(url)
         if url == "https://a.example.com/" and not in_flight.is_set():
             in_flight.set()
