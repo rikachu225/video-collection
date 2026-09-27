@@ -1412,13 +1412,15 @@ html, body {
 .toast-error { border-left: 3px solid var(--red); }
 .toast-info { border-left: 3px solid var(--cyan); }
 
-/* A toast carrying a link must take clicks (the container is click-through) */
+/* A toast carrying a link must take clicks (the container is click-through) — but only
+   while it is shown: fading in or out it is (nearly) invisible and must not eat clicks.
+   app.js placeToasts() keeps the stack clear of the assistant orb and panel. */
 .toast.has-action {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  pointer-events: auto;
 }
+.toast.has-action.show { pointer-events: auto; }
 .toast-action {
   flex: none;
   display: inline-flex;

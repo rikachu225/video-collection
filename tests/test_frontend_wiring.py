@@ -562,3 +562,108 @@ def test_a_bento_grid_hidden_during_the_resize_is_reclamped_when_shown(bento_run
     assert got["browseShownAgain"] == [1, 1, 2, 1, 1]
     assert got["browseShownAgainTracks"] == 2
 
+
+# ── Toasts stay clear of the assistant orb and panel ──
+_TOAST_DOM = r"""
+// Geometry from styles.css / assistant.css: the stack's home is right: 20px; bottom: 20px
+// (an inline right/bottom moves it); each toast is TOAST_W x 50 with 8px between them;
+// the orb is 56px square, by default at right: 24px; bottom: 24px.
+const TOAST_W = 232;
+const box = new FakeEl("div");
+box.getBoundingClientRect = function () {
+  const n = this.children.length, w = n ? TOAST_W : 0, h = n ? n * 50 + (n - 1) * 8 : 0;
+  const right = window.innerWidth - (this.style.right ? parseFloat(this.style.right) : 20);
+  const bottom = window.innerHeight - (this.style.bottom ? parseFloat(this.style.bottom) : 20);
+  return rect(right - w, bottom - h, w, h);
+};
+const orb = new FakeEl("button"), panel = new FakeEl("div", "hidden");
+orb.getBoundingClientRect = () => orb.classList.contains("hidden") ? rect(0, 0, 0, 0) : rect(orb.x, orb.y, 56, 56);
+panel.getBoundingClientRect = () => panel.classList.contains("hidden") ? rect(0, 0, 0, 0) : panel.box;
+const dom = { toastContainer: box };
+const $ = (sel) => ({ "#ai-orb": orb, "#ai-panel": panel })[sel] || null;
+const $$ = () => [];
+// assistant.js moves, shows and hides the orb and panel through their style and class
+// attributes. mutate() changes one and notifies the observers watching it, as a browser would.
+const observers = [];
+class MutationObserver {
+  constructor(cb) { this.cb = cb; this.watch = []; observers.push(this); }
+  observe(target, opts) { this.watch.push([target, opts]); }
+}
+function mutate(el, attr, change) {
+  change();
+  for (const o of observers) {
+    if (o.watch.some(([t, opts]) => t === el && opts.attributes
+        && (!opts.attributeFilter || opts.attributeFilter.includes(attr)))) {
+      o.cb([{ type: "attributes", target: el, attributeName: attr }], o);
+    }
+  }
+}
+function reset(w, h) {
+  box.children = [];
+  window.innerWidth = w; window.innerHeight = h;
+  orb.x = w - 80; orb.y = h - 80;
+  orb.classList.remove("hidden"); panel.classList.add("hidden");
+}
+"""
+
+_TOAST_SCENARIO = r"""
+const link = { label: "Open Netflix", href: "https://example.invalid/" };
+const report = () => {
+  const b = box.getBoundingClientRect();
+  return { overOrb: hit(b, orb.getBoundingClientRect()), overPanel: hit(b, panel.getBoundingClientRect()),
+           onScreen: b.left >= 0 && b.top >= 0 && b.right <= window.innerWidth && b.bottom <= window.innerHeight,
+           moved: Boolean(box.style.right || box.style.bottom) };
+};
+const out = {};
+
+reset(1600, 900);
+toast("Netflix is ready", "info", link);
+out.defaultOrb = report();
+const at = box.getBoundingClientRect();      // the user drags the orb onto the toast
+mutate(orb, "style", () => { orb.x = at.left + 20; orb.y = at.top - 3; });
+out.orbDraggedOntoToast = report();
+
+reset(1600, 900);
+mutate(panel, "class", () => { panel.classList.remove("hidden"); panel.box = rect(1196, 408, 380, 400); });
+toast("One", "info"); toast("Two", "success"); toast("Netflix is ready", "info", link);
+out.stackWithChatOpen = report();
+
+reset(320, 800);                              // no room to slide left of the orb
+toast("Netflix is ready", "info", link);
+out.narrowWindow = report();
+
+reset(1600, 900);
+orb.classList.add("hidden");                  // assistant switched off
+toast("Saved", "success");
+out.orbHidden = report();
+console.log(JSON.stringify(out));
+"""
+
+
+@needs_node
+def test_toasts_never_cover_the_assistant_orb_wherever_it_is(tmp_path):
+    # The toast stack and the orb shared the bottom-right corner. A link toast takes
+    # clicks for 10s, so clicking the orb there launched the service instead.
+    got = _run_node(tmp_path, _FAKE_DOM, _TOAST_DOM, _app_section("Toast Notifications"), _TOAST_SCENARIO)
+    assert not got["defaultOrb"]["overOrb"], "a toast covers the orb in its default corner"
+    assert not got["orbDraggedOntoToast"]["overOrb"], "a toast on screen must move when the orb is dragged onto it"
+    assert not got["stackWithChatOpen"]["overOrb"]
+    assert not got["stackWithChatOpen"]["overPanel"], "the stack covers the open chat panel"
+    assert not got["narrowWindow"]["overOrb"], "no room to the left must not mean covering the orb"
+    assert not got["orbHidden"]["moved"], "with no orb the stack stays in its CSS corner"
+    assert all(r["onScreen"] for r in got.values()), got
+
+
+def test_only_a_shown_action_toast_takes_clicks():
+    css = re.sub(r"/\*.*?\*/", "", (STATIC / "styles.css").read_text(encoding="utf-8"), flags=re.S)
+    rules = [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)]
+    container = [re.findall(r"pointer-events\s*:\s*([\w-]+)", body) for sel, body in rules if sel == "#toast-container"]
+    assert {v for vals in container for v in vals} == {"none"}, (
+        "#toast-container must stay click-through, or its whole box eats clicks")
+    takes_clicks = [part.strip() for sel, body in rules if re.search(r"pointer-events\s*:\s*auto", body)
+                    for part in sel.split(",") if ".toast" in part]
+    assert takes_clicks, "no toast takes clicks - a link toast could not be followed"
+    # Fading in or out, a toast is (nearly) invisible and must not swallow clicks meant for
+    # whatever is under it.
+    assert all(".show" in part for part in takes_clicks), takes_clicks
+

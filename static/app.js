@@ -190,6 +190,7 @@ function toast(message, type = "info", action = null) {
     el.appendChild(link);
   }
   dom.toastContainer.appendChild(el);
+  placeToasts();
   requestAnimationFrame(() => el.classList.add("show"));
   const dismiss = () => {
     el.classList.remove("show");
@@ -198,6 +199,59 @@ function toast(message, type = "info", action = null) {
   const timer = setTimeout(dismiss, action ? 10000 : 2500);
   if (link) link.addEventListener("click", () => { clearTimeout(timer); dismiss(); });
 }
+
+// px kept between the toast stack, the orb/panel and the viewport edge. More than the 20px a
+// toast slides in from (.toast translateX in styles.css), so it can't brush the orb mid-slide.
+const TOAST_CLEARANCE = 24;
+
+// The toasts' corner (bottom-right) is also the assistant orb's default spot, and the user
+// can drag the orb anywhere. A toast with a link takes clicks, so one parked over the orb
+// swallowed them — clicking the orb to close the chat opened the service instead. Keep the
+// stack clear of the orb and the open chat panel: slide it left past them, or, with no
+// room there (narrow window), above or below them. Removing a toast only shrinks the stack
+// toward its anchored corner, so re-placing on add and whenever the orb or panel changes
+// is enough.
+function placeToasts() {
+  const box = dom.toastContainer;
+  box.style.right = box.style.bottom = "";                 // back to the CSS home
+  if (!box.firstElementChild) return;
+  const avoid = [$("#ai-orb"), $("#ai-panel")]              // orb first: it matters most
+    .filter((el) => el && !el.classList.contains("hidden"))
+    .map((el) => el.getBoundingClientRect())
+    .filter((r) => r.width && r.height);
+  if (!avoid.length) return;
+  const home = box.getBoundingClientRect();
+  const w = home.width, h = home.height, m = TOAST_CLEARANCE;
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const blocker = (left, top, rects) => rects.find((r) =>
+    left < r.right + m && left + w > r.left - m && top < r.bottom + m && top + h > r.top - m);
+
+  // 1. Same height, slid left past whatever it would cover. Each step clears one obstacle
+  //    for good (the stack only moves left), so this ends after at most avoid.length steps.
+  let left = home.left;
+  for (let r = blocker(left, home.top, avoid); r; r = blocker(left, home.top, avoid)) {
+    left = r.left - m - w;
+  }
+  if (left === home.left) return;                           // nothing in the way
+  if (left >= m) { box.style.right = `${vw - left - w}px`; return; }
+
+  // 2. Same right edge, above or below an obstacle. If no spot clears them all, clear the
+  //    first one alone (the orb, when shown) — a link over the orb is what this prevents.
+  for (const rects of [avoid, avoid.slice(0, 1)]) {
+    const top = rects.flatMap((r) => [r.top - m - h, r.bottom + m])
+      .find((t) => t >= m && t + h <= vh - m && !blocker(home.left, t, rects));
+    if (top != null) { box.style.bottom = `${vh - top - h}px`; return; }
+  }
+}
+
+// assistant.js moves, shows and hides the orb and panel (drag, reset, restore, open/close) by
+// their style and class; follow those changes so a toast already on screen moves out of the way.
+const toastObstacleWatch = new MutationObserver(() => placeToasts());
+["#ai-orb", "#ai-panel"].forEach((sel) => {
+  const el = $(sel);
+  if (el) toastObstacleWatch.observe(el, { attributes: true, attributeFilter: ["style", "class"] });
+});
+window.addEventListener("resize", () => placeToasts());
 
 // ── Navigation ───────────────────────────────────────────────
 const viewScroll = {}; // per-view scroll memory (#main is the single scroll container)
