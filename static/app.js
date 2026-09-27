@@ -2094,8 +2094,13 @@ function buildWorkspacePanels() {
 // Pending re-layout after late video metadata arrives (see autoTileLayout). Cancelled the
 // moment the user drags or resizes a panel, so it can never overwrite a manual arrangement.
 let wsRelayoutTimer = null;
+// Cancelling the pending timer isn't enough on its own: metadata for uncached clips keeps
+// arriving for seconds, and each arrival would arm a fresh timer. Once a panel has actually
+// been moved or resized, late metadata stops re-tiling until the next explicit auto-tile.
+let wsUserArranged = false;
 
 function autoTileLayout() {
+  wsUserArranged = false;   // an auto-tile replaces any manual arrangement: re-arm the late re-layout
   // Array, not the raw NodeList — the layout below uses .map, which NodeList doesn't have
   const panels = [...$$(".ws-panel")];
   const count = panels.length;
@@ -2126,9 +2131,10 @@ function autoTileLayout() {
   pending.forEach((v) => {
     if (v.preload === "none") v.preload = "metadata";
     v.addEventListener("loadedmetadata", () => {
+      if (wsUserArranged) return;   // the user's arrangement wins over late metadata
       clearTimeout(wsRelayoutTimer);
       wsRelayoutTimer = setTimeout(() => {
-        if (state.workspaceOpen) autoTileLayout();
+        if (state.workspaceOpen && !wsUserArranged) autoTileLayout();
       }, 200);
     }, { once: true });
   });
@@ -2354,6 +2360,7 @@ document.addEventListener("mousemove", (e) => {
     }
   }
   if (dragState) {
+    wsUserArranged = true;   // set on real movement, so a click that only raises a panel doesn't count
     const { panel, startX, startY } = dragState;
     const canvas = dom.workspaceCanvas;
     const cw = canvas.clientWidth;
@@ -2373,6 +2380,7 @@ document.addEventListener("mousemove", (e) => {
     panel.style.top = `${newY}px`;
   }
   if (resizeState) {
+    wsUserArranged = true;
     const { panel, corner, startX, startY, startW, startH, startLeft, startTop } = resizeState;
     const dx = e.clientX - startX;
     const dy = e.clientY - startY;
