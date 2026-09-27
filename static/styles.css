@@ -370,6 +370,11 @@ html, body {
   flex-direction: column;
   overflow-x: hidden;
   overflow-y: auto;
+  /* Always reserve the scrollbar's space, so content height can never change the width of
+     the views. The bento re-clamp (app.js) follows the grids' width and changes their height:
+     if that height could add or remove this scrollbar, the width would change again and set
+     off another re-clamp (in Chromium it re-triggered itself twice before settling). */
+  scrollbar-gutter: stable;
   background: var(--bg-deep);
   scrollbar-width: thin;
   scrollbar-color: var(--border-glow) transparent;

@@ -564,6 +564,17 @@ def test_a_bento_grid_hidden_during_the_resize_is_reclamped_when_shown(bento_run
     assert got["browseShownAgainTracks"] == 2
 
 
+def test_main_reserves_its_scrollbar_gutter():
+    # The observer re-clamps on a width change and the re-clamp changes the grid's height. If
+    # that height could add or remove #main's scrollbar, it would change the width again: in
+    # Chromium a re-clamp re-triggered itself twice that way before settling.
+    css = re.sub(r"/\*.*?\*/", "", (STATIC / "styles.css").read_text(encoding="utf-8"), flags=re.S)
+    rules = [(sel.strip(), body) for sel, body in re.findall(r"([^{}]+)\{([^{}]*)\}", css)]
+    gutter = [v for sel, body in rules if sel == "#main"
+              for v in re.findall(r"scrollbar-gutter\s*:\s*([\w -]+?)\s*(?:;|$)", body)]
+    assert gutter == ["stable"], gutter
+
+
 # ── Toasts stay clear of the assistant orb and panel ──
 _TOAST_DOM = r"""
 // Geometry from styles.css / assistant.css: the stack's home is right: 20px; bottom: 20px
