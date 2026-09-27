@@ -1023,10 +1023,13 @@ SERVICE_ICONS_AUTO.mkdir(parents=True, exist_ok=True)
 ICON_MAX_BYTES = 2 * 1024 * 1024
 ICON_MAX_REDIRECTS = 4
 ICON_TIMEOUT = 12                  # per socket operation (connect / one read)
+ICON_CONNECT_SLICE = 4             # connect time per address while another one is left to try
 ICON_BUDGET = 20                   # wall-clock seconds for one whole lookup, all hops
 ICON_MAX_CANDIDATES = 8            # icon URLs tried per lookup (standard paths always kept)
 ICON_READ_CHUNK = 64 * 1024
 ICON_MISS_TTL = 24 * 3600          # don't retry a failed lookup for a day
+ICON_TIMEOUT_MISS_TTL = 3600       # ...unless it ran out of time: then retry after an hour
+_ICON_TIMEOUT_MISS = b"timeout"    # miss-marker body that selects ICON_TIMEOUT_MISS_TTL
 _icon_clock = time.monotonic       # indirection so tests can drive the budget
 _ICON_UA = "Mozilla/5.0 (compatible; VideoCollection/2.8; +local)"
 _ICON_TYPES = {
@@ -1215,6 +1218,15 @@ def _icon_getaddrinfo(host, deadline):
     return value
 
 
+def _icon_is_timeout(e):
+    """A timeout, or DNS answering "try again" (its own timeout). The site may be fine,
+    so a lookup that hit one is retried after ICON_TIMEOUT_MISS_TTL, not a day."""
+    if isinstance(e, URLError):
+        e = e.reason
+    return isinstance(e, TimeoutError) or (
+        isinstance(e, socket.gaierror) and e.errno == getattr(socket, "EAI_AGAIN", None))
+
+
 class _IconLookup:
     """Name resolution for ONE icon lookup (homepage, candidates, redirects).
 
@@ -1222,10 +1234,12 @@ class _IconLookup:
     (_icon_connect) both read that one answer, so a second DNS answer (rebinding) can't
     reach the dial. A failure is remembered too: when the service's host doesn't
     resolve, its other candidates fail at once instead of each waiting on DNS again.
+    `timed_out` records that any step of the lookup timed out (see _icon_is_timeout).
     """
 
     def __init__(self):
         self._answers = {}
+        self.timed_out = False
 
     def resolve(self, host, deadline=None):
         key = host.lower()
@@ -1233,11 +1247,19 @@ class _IconLookup:
             try:
                 self._answers[key] = _icon_getaddrinfo(host, deadline)
             except (OSError, ValueError) as e:  # gaierror, timeout, bad IDNA label
+                self.timed_out = self.timed_out or _icon_is_timeout(e)
                 self._answers[key] = e
         answer = self._answers[key]
         if isinstance(answer, Exception):
             raise answer
         return answer
+
+    def prefer(self, host, info):
+        """Dial `info` first for the rest of the lookup: it just accepted a connection."""
+        answer = self._answers.get(host.lower())
+        if isinstance(answer, list) and info in answer:
+            answer.remove(info)
+            answer.insert(0, info)
 
 
 def _host_is_public(hostname, lookup=None, deadline=None):
@@ -1319,24 +1341,33 @@ def _icon_connect(address, deadline, lookup, public_only=True):
     differently spelled host would give: urllib unquotes %XX in the host it connects
     to, while the pre-check reads urlparse(), which doesn't. `public_only` is off only
     for the hop to an https proxy, which may sit on the LAN; the pre-check has then
-    checked the target, and the proxy resolves it. Every address shares the lookup
-    deadline instead of each getting a full timeout of its own.
+    checked the target, and the proxy resolves it.
+
+    Every address shares the lookup deadline, and each one but the last may take only
+    ICON_CONNECT_SLICE of it: a dead first address (a blackholed IPv6 route, one dead
+    CDN edge) must leave time for the next, on every connection of the lookup. The
+    address that accepts is dialled first for the rest of the lookup.
     """
     host, port = address
-    infos = lookup.resolve(host, deadline)
+    infos = list(lookup.resolve(host, deadline))     # a copy: prefer() reorders the answer
     if public_only and not _all_public(infos):
         raise OSError(f"refusing to connect: {host} resolves to a non-public address")
     err = OSError(f"no address for {host}")
-    for family, socktype, proto, _, sockaddr in infos:
+    for i, info in enumerate(infos):
+        family, socktype, proto, _, sockaddr = info
         timeout = _icon_op_timeout(deadline)          # raises once the budget is spent
+        if i < len(infos) - 1:
+            timeout = min(timeout, ICON_CONNECT_SLICE)
         sock = _DeadlineSocket(family, socktype, proto)
         try:
             sock.settimeout(timeout)
             sock.connect((sockaddr[0], port) + tuple(sockaddr[2:]))
         except OSError as e:
             sock.close()
+            lookup.timed_out = lookup.timed_out or _icon_is_timeout(e)
             err = e
             continue
+        lookup.prefer(host, info)
         sock._icon_deadline = deadline
         return sock
     raise err
@@ -1441,15 +1472,17 @@ def _icon_http_get(url, accept="*/*", deadline=None, lookup=None):
                 url = urljoin(url, e.headers["Location"])
                 continue
             return None
-        except (URLError, OSError, ValueError, HTTPException):
+        except (URLError, OSError, ValueError, HTTPException) as e:
             # HTTPException: http.client raises it from getresponse() (bad or HTTP/2
             # status line, too many or overlong headers) and from putrequest() for a path
             # it refuses (InvalidURL, e.g. a space in an icon href) — not an OSError.
+            lookup.timed_out = lookup.timed_out or _icon_is_timeout(e)
             return None
         try:
             ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
             body = _read_icon_body(resp, deadline)
-        except (OSError, ValueError, HTTPException):   # timeout / reset / truncated body
+        except (OSError, ValueError, HTTPException) as e:   # timeout / reset / truncated body
+            lookup.timed_out = lookup.timed_out or _icon_is_timeout(e)
             return None
         finally:
             resp.close()
@@ -1617,11 +1650,23 @@ def _write_icon_atomically(target, body):
         raise
 
 
+def _icon_miss_stands(marker):
+    """True while a miss marker is younger than its TTL: ICON_MISS_TTL for a definite
+    miss, ICON_TIMEOUT_MISS_TTL for a lookup that timed out or ran out of budget."""
+    try:
+        age = datetime.now(timezone.utc).timestamp() - marker.stat().st_mtime
+        timed_out = marker.read_bytes().strip() == _ICON_TIMEOUT_MISS
+    except OSError:
+        return False
+    return age < (ICON_TIMEOUT_MISS_TTL if timed_out else ICON_MISS_TTL)
+
+
 def _fetch_service_icon(service, generation=None):
     """Resolve, download and cache one service's icon. Returns the cached Path or None.
 
     The whole lookup — homepage, every candidate, every redirect — shares one
-    ICON_BUDGET deadline. Running out counts as a miss (negative-cached like any other).
+    ICON_BUDGET deadline. A miss is negative-cached: for a day, or for an hour when the
+    lookup timed out or ran out of budget (a dead address, slow DNS, a slow server).
     `generation` must be read (_icon_generation) before `service` was; nothing is
     written if the icon was cleared since (see _icon_commit).
     """
@@ -1629,12 +1674,8 @@ def _fetch_service_icon(service, generation=None):
     if generation is None:
         generation = _icon_generation(service_id)
     marker = _icon_miss_marker(service_id)
-    if marker.exists():
-        try:
-            if (datetime.now(timezone.utc).timestamp() - marker.stat().st_mtime) < ICON_MISS_TTL:
-                return None
-        except OSError:
-            pass
+    if _icon_miss_stands(marker):
+        return None
 
     deadline = _icon_clock() + ICON_BUDGET
     lookup = _IconLookup()                 # one DNS answer per host for the whole lookup
@@ -1659,10 +1700,11 @@ def _fetch_service_icon(service, generation=None):
         _discard_icon_file(marker)
         return target
 
+    timed_out = lookup.timed_out or _icon_time_left(deadline) <= 0
     with _icon_commit(service_id, generation) as current:
         if current:
             try:
-                marker.write_text("", encoding="utf-8")   # negative cache; retried after ICON_MISS_TTL
+                marker.write_bytes(_ICON_TIMEOUT_MISS if timed_out else b"")   # negative cache
             except OSError:
                 pass
     return None

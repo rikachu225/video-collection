@@ -34,6 +34,7 @@ BUDGET = 1.0               # the lookup deadline these tests set
 MARGIN = 1.0               # allowed overrun (thread scheduling, a slow CI runner)
 CONTROL_BUDGET = 30.0      # the non-drip controls aren't about timing
 PNG = b"\x89PNG\r\n\x1a\n" + b"x" * 64
+SITE = "icons.test"        # a name the test certificate also carries; DNS is faked for it
 
 
 def make_server(tmp_path, monkeypatch):
@@ -44,7 +45,7 @@ def make_server(tmp_path, monkeypatch):
 
 
 def _self_signed(tmp_path):
-    """A certificate for 127.0.0.1, written to tmp_path. Returns (cert, key) paths."""
+    """A certificate for 127.0.0.1 and SITE, written to tmp_path. Returns (cert, key)."""
     key = ec.generate_private_key(ec.SECP256R1())
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "127.0.0.1")])
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -56,7 +57,8 @@ def _self_signed(tmp_path):
             .not_valid_before(now - datetime.timedelta(hours=1))
             .not_valid_after(now + datetime.timedelta(days=1))
             .add_extension(x509.SubjectAlternativeName(
-                [x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+                [x509.IPAddress(ipaddress.ip_address("127.0.0.1")), x509.DNSName(SITE)]),
+                critical=False)
             .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
             .add_extension(x509.KeyUsage(
                 digital_signature=True, key_cert_sign=True, crl_sign=False,
@@ -119,10 +121,57 @@ class _DripServer:
         self.thread.join(timeout=10)
 
 
+class _IconSite:
+    """A TLS site on 127.0.0.1 answering any number of connections, one request each:
+    `routes` maps a path to (content_type, body), anything else is a 404."""
+
+    def __init__(self, cert, key, routes):
+        self.ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        self.ctx.load_cert_chain(cert, key)
+        self.routes, self.requests = routes, []
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.listener.accept()
+            except OSError:                  # closed: the test is over
+                return
+            try:
+                with self.ctx.wrap_socket(conn, server_side=True) as tls:
+                    request = b""
+                    while b"\r\n\r\n" not in request:
+                        chunk = tls.recv(4096)
+                        if not chunk:
+                            break
+                        request += chunk
+                    path = request.split(b" ", 2)[1].decode() if request.count(b" ") >= 2 else ""
+                    self.requests.append(path)
+                    ctype, body = self.routes.get(path, (None, b""))
+                    head = (f"HTTP/1.1 200 OK\r\nContent-Type: {ctype}\r\n" if ctype
+                            else "HTTP/1.1 404 Not Found\r\n")
+                    tls.sendall(head.encode() + b"Content-Length: %d\r\nConnection: close\r\n\r\n"
+                                % len(body) + body)
+            except OSError:                  # the client went away
+                pass
+
+    def close(self):
+        self.listener.close()
+        self.thread.join(timeout=10)
+
+
 @pytest.fixture
-def tls_env(tmp_path, monkeypatch):
+def tls_cert(tmp_path):
+    return _self_signed(tmp_path)
+
+
+@pytest.fixture
+def tls_env(tmp_path, monkeypatch, tls_cert):
     server = make_server(tmp_path, monkeypatch)
-    cert, key = _self_signed(tmp_path)
+    cert, key = tls_cert
     monkeypatch.setattr(server, "_is_public_ip", lambda ip: True)   # 127.0.0.1 is private
     monkeypatch.setattr(server, "_icon_tls_context",
                         lambda: ssl.create_default_context(cafile=str(cert)))
@@ -195,6 +244,64 @@ def test_an_expired_deadline_never_reads_again(tls_env):
         server._icon_op_timeout(time.monotonic() - 0.001)
     assert server._icon_op_timeout(None) == server.ICON_TIMEOUT
     assert 0 < server._icon_op_timeout(time.monotonic() + 0.5) <= 0.5
+
+
+# ── Connect: a dead address must not cost the whole lookup ──
+DEAD = "192.0.2.1"         # TEST-NET-1; its dial is simulated, never made
+
+
+def test_a_dead_first_address_leaves_time_for_the_next_one(tls_env, tls_cert, monkeypatch):
+    # Blackholed IPv6 on a dual-stack network, or one dead CDN edge: the first address
+    # never accepts. With the whole 12s op timeout per address, the homepage and the
+    # icon connection each waited it out, the 20s budget ran out, and the icon was
+    # negative-cached for a day. The dead dial is simulated under a fake clock (it
+    # "waits" its full timeout), the live one is a real TLS site on 127.0.0.1.
+    server, _ = tls_env
+    site = _IconSite(*tls_cert, {"/": ("text/html", b"<html></html>"),
+                                 "/apple-touch-icon.png": ("image/png", PNG)})
+    _fake_dns(server, monkeypatch, {SITE: [DEAD, "127.0.0.1"]})
+    now = [1000.0]
+    monkeypatch.setattr(server, "_icon_clock", lambda: now[0])
+    dials, real_connect = [], server._DeadlineSocket.connect
+
+    def connect(sock, sockaddr):
+        dials.append((sockaddr[0], sock.gettimeout()))
+        if sockaddr[0] == DEAD:
+            now[0] += sock.gettimeout()
+            raise TimeoutError("timed out")
+        return real_connect(sock, sockaddr)
+
+    monkeypatch.setattr(server._DeadlineSocket, "connect", connect)
+    try:
+        path = server._fetch_service_icon({"id": "icons", "url": f"https://{SITE}:{site.port}/"})
+    finally:
+        site.close()
+    assert path is not None and path.read_bytes() == PNG
+    assert site.requests == ["/", "/apple-touch-icon.png"]
+    # One short try at the dead address; the address that answered is dialled first after.
+    assert dials == [(DEAD, server.ICON_CONNECT_SLICE), ("127.0.0.1", server.ICON_TIMEOUT),
+                     ("127.0.0.1", server.ICON_CONNECT_SLICE)]
+    assert now[0] - 1000.0 == server.ICON_CONNECT_SLICE
+
+
+def test_the_last_address_keeps_the_full_connect_timeout(no_dial, monkeypatch):
+    # Only an address with another one behind it is cut to ICON_CONNECT_SLICE; a host's
+    # last (or only) address still gets the whole op timeout on a slow link.
+    server, _ = no_dial
+    _fake_dns(server, monkeypatch, {"two.test": ["93.184.216.34", "93.184.216.35"],
+                                    "one.test": ["93.184.216.36"]})
+    timeouts = []
+
+    def refuse(sock, sockaddr):
+        timeouts.append(sock.gettimeout())
+        raise ConnectionRefusedError("test: dials are recorded, never made")
+
+    monkeypatch.setattr(server._DeadlineSocket, "connect", refuse)
+    deadline = time.monotonic() + CONTROL_BUDGET
+    for host in ("two.test", "one.test"):
+        with pytest.raises(ConnectionRefusedError):
+            server._icon_connect((host, 443), deadline, server._IconLookup())
+    assert timeouts == [server.ICON_CONNECT_SLICE, server.ICON_TIMEOUT, server.ICON_TIMEOUT]
 
 
 # ── SSRF: the address checked is the address dialled ──

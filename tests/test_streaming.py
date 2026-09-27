@@ -889,6 +889,60 @@ def test_an_expired_miss_marker_is_retried(tmp_path, monkeypatch):
     assert not marker.exists()
 
 
+@pytest.mark.parametrize("timed_out", [True, False], ids=["ran-out-of-time", "definite-miss"])
+def test_a_miss_that_ran_out_of_time_is_retried_after_an_hour_not_a_day(tmp_path, monkeypatch,
+                                                                       timed_out):
+    # A lookup cut short (a dead address, slow DNS, a slow server) says nothing about the
+    # site; a day-long miss hid the icon after one bad minute. A definite miss keeps 24h.
+    import os
+    import time
+    server, client = make_client(tmp_path, monkeypatch)
+    now = _fake_clock(server, monkeypatch)
+    calls = []
+
+    def lookup_fails(url, accept="*/*", deadline=None, lookup=None):
+        calls.append(url)
+        if timed_out:
+            now[0] += server.ICON_BUDGET          # the first request spends the whole budget
+        return None
+
+    monkeypatch.setattr(server, "_icon_http_get", lookup_fails)
+    assert client.get("/api/service-icon/hulu").status_code == 404
+    marker = server._icon_miss_marker("hulu")
+    assert marker.exists()
+    tried = len(calls)
+
+    def age_marker(seconds):
+        stamp = time.time() - seconds
+        os.utime(marker, (stamp, stamp))
+
+    age_marker(server.ICON_TIMEOUT_MISS_TTL - 60)
+    assert client.get("/api/service-icon/hulu").status_code == 404
+    assert len(calls) == tried                    # within the hour: still negatively cached
+
+    age_marker(server.ICON_TIMEOUT_MISS_TTL + 60)
+    monkeypatch.setattr(server, "_icon_http_get",
+                        _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
+    res = client.get("/api/service-icon/hulu")
+    if timed_out:
+        assert res.status_code == 200 and res.data == PNG
+    else:
+        assert res.status_code == 404 and marker.exists()
+
+
+def test_a_dns_timeout_makes_a_short_lived_miss(tmp_path, monkeypatch):
+    # EAI_AGAIN is the resolver's own "timed out, try again".
+    server, _ = make_client(tmp_path, monkeypatch)
+    _fake_network(server, monkeypatch, {})
+
+    def try_again(host, *args, **kwargs):
+        raise socket.gaierror(socket.EAI_AGAIN, "temporary failure in name resolution")
+
+    monkeypatch.setattr(server.socket, "getaddrinfo", try_again)
+    assert server._fetch_service_icon({"id": "hulu", "url": "https://www.hulu.com/"}) is None
+    assert server._icon_miss_marker("hulu").read_bytes() == server._ICON_TIMEOUT_MISS
+
+
 def _leftovers(server):
     return sorted(p.name for p in server.SERVICE_ICONS_AUTO.iterdir())
 
