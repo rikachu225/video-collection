@@ -21,6 +21,7 @@ top level.
 The behaviour checks at the end run real sections of app.js under node against a
 small fake DOM (skipped when node is not on PATH).
 """
+import importlib
 import json
 import re
 import shutil
@@ -667,3 +668,46 @@ def test_only_a_shown_action_toast_takes_clicks():
     # whatever is under it.
     assert all(".show" in part for part in takes_clicks), takes_clicks
 
+
+# ── Streaming icon URLs ──
+_STREAMING_DOM = r"""
+const state = { streamingServices: [
+  { id: "netflix", name: "Netflix", url: "https://www.netflix.com/", accent: "#e50914", enabled: true } ] };
+const dom = { streamingGrid: new FakeEl("div"), streamingEmpty: new FakeEl("div") };
+const $ = () => null, $$ = () => [];
+"""
+
+_STREAMING_SCENARIO = r"""
+const logoSrc = () => dom.streamingGrid.children[0].children.find((c) => c.className === "streaming-logo").src;
+renderStreaming();
+const normal = logoSrc();
+iconBust = "1700000000000";                   // what Settings > Refresh Icons sets
+renderStreaming();
+console.log(JSON.stringify({ normal, refreshed: logoSrc() }));
+"""
+
+# Every URL v2.8.2 and earlier requested icons at, each cached for 7 days (max-age=604800).
+_PRE_283_ICON_URL = re.compile(r"/api/service-icon/netflix(\?t=\d+)?")
+
+
+@needs_node
+def test_tile_icon_urls_never_reuse_a_pre_upgrade_cache_entry(tmp_path, monkeypatch):
+    got = _run_node(tmp_path, _FAKE_DOM, _STREAMING_DOM,
+                    _app_section("Streaming (deep-link launcher tiles)"), _STREAMING_SCENARIO)
+    for url in got.values():
+        assert not _PRE_283_ICON_URL.fullmatch(url), (
+            f"{url} is a URL v2.8.2 cached for a week; the browser serves that without asking")
+    assert got["refreshed"] != got["normal"], "Refresh Icons must change the URL within the page"
+
+    # ...and the server answers them (the route ignores the query).
+    data = tmp_path / "data"
+    data.mkdir()
+    monkeypatch.setenv("VIDCOL_DATA_DIR", str(data))
+    import server
+    importlib.reload(server)
+    icon = b"\x89PNG\r\n\x1a\n" + b"i" * 32
+    (server.SERVICE_ICONS_DIR / "netflix.png").write_bytes(icon)   # a user drop-in: no fetch
+    client = server.app.test_client()
+    for url in got.values():
+        res = client.get(url)
+        assert res.status_code == 200 and res.data == icon, url

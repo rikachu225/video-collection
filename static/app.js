@@ -3015,9 +3015,21 @@ document.addEventListener("keydown", (e) => {
 
 const LAUNCH_ICON = `<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>`;
 
-/** Bumped by "Refresh Icons" so a re-fetched (or newly dropped-in) icon beats the
- *  browser's 7-day cache on /api/service-icon. Empty on a normal load. */
+/** Part of every icon URL. v2.8.2 and earlier served icons with a 7-day max-age under the
+ *  bare /api/service-icon/<id>, so a browser that cached one there would keep showing it
+ *  without asking the server; a URL those entries can't match is what retires them. The
+ *  server now answers no-cache + ETag, so a new or re-fetched icon never needs this bumped —
+ *  only another change to how icons are cached would. */
+const ICON_URL_REV = "2";
+
+/** Set by "Refresh Icons". Revalidation covers reloads, but within one page a re-render
+ *  with an unchanged <img> URL can reuse the image already decoded for this document
+ *  without asking the server, so a fresh query makes it fetch. Empty on a normal load. */
 let iconBust = "";
+
+function serviceIconUrl(id) {
+  return `/api/service-icon/${encodeURIComponent(id)}?v=${ICON_URL_REV}${iconBust ? `&t=${iconBust}` : ""}`;
+}
 
 /** Defence in depth. The server already enforces https-only, but this value becomes
  *  an href in our own origin — a second gate costs nothing. */
@@ -3082,7 +3094,7 @@ function renderStreaming() {
     logo.alt = "";
     logo.decoding = "async";   // eager on purpose: every tile is above the fold and the
                                // icons are small local files, so lazy only risks blanks
-    logo.src = `/api/service-icon/${encodeURIComponent(svc.id)}${iconBust ? `?t=${iconBust}` : ""}`;
+    logo.src = serviceIconUrl(svc.id);
     logo.addEventListener("error", () => logo.remove());
 
     const name = document.createElement("div");
@@ -3280,8 +3292,8 @@ async function addStreamingService() {
   }
 }
 
-/** Drop the fetched copies so each icon re-resolves, and bust the browser cache so a
- *  file you just dropped into data/service_icons/ shows up immediately. */
+/** Drop the fetched copies so each icon re-resolves, and re-render under a fresh icon URL
+ *  (iconBust) so a file you just dropped into data/service_icons/ shows up immediately. */
 async function refreshServiceIcons() {
   const btn = $("#btn-refresh-icons");
   btn.disabled = true;
