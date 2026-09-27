@@ -287,6 +287,9 @@
     if (panelResize) {
       const p = panel.getBoundingClientRect();
       store.set("aiPanelSize", { w: Math.round(p.width), h: Math.round(p.height) });
+      // The top-left grip moves the panel's top-left corner. A pinned panel is restored from
+      // aiPanelPos on every reopen and window resize, so keep it in step or it jumps back.
+      if (store.get("aiPanelPos")) store.set("aiPanelPos", { x: Math.round(p.left), y: Math.round(p.top) });
       panelResize = null;
     }
   });
