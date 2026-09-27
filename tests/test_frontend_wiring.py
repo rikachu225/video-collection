@@ -443,15 +443,17 @@ const hit = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom &
 """
 
 
-# ── Bento: a window resize re-clamps column spans ──
+# ── Bento: a grid that changes width re-clamps column spans ──
 _BENTO_DOM = r"""
 // The CSS Grid behaviour the clamp depends on: the resolved grid-template-columns lists
-// EVERY column - the template's own (`explicit`, set by the test as the window "resizes")
-// plus the implicit ones a span wider than the template creates. A grid in a hidden view
-// has no layout box and reports the computed value, which holds no px tracks.
+// EVERY column - the template's own (`explicit`, set by the test as the grid's width
+// changes) plus the implicit ones a span wider than the template creates. A grid in a
+// hidden view has no layout box: it reports the computed value, which holds no px tracks,
+// and is 0 wide.
 const spanOf = (el) => parseInt(String(el.style.gridColumnEnd || "span 1").replace("span ", ""), 10) || 1;
 class FakeGrid extends FakeEl {
-  constructor(view, explicit) { super("div"); this.view = view; this.explicit = explicit; }
+  constructor(view, explicit, ...classes) { super("div", ...classes); this.view = view; this.explicit = explicit; }
+  get clientWidth() { return this.view.classList.contains("active") ? this.explicit * 116 - 16 : 0; }
 }
 function getComputedStyle(el) {
   if (!(el instanceof FakeGrid)) return {};
@@ -470,7 +472,8 @@ class FakeTile extends FakeEl {
   get clientWidth() { return spanOf(this) * 116 - 16; }
 }
 const views = { browse: new FakeEl("section", "view", "active"), theater: new FakeEl("section", "view") };
-const browseGrid = new FakeGrid(views.browse, 5), theaterGrid = new FakeGrid(views.theater, 12);
+const browseGrid = new FakeGrid(views.browse, 5, "video-grid", "bento");
+const theaterGrid = new FakeGrid(views.theater, 12, "theater-grid");
 const grids = [browseGrid, theaterGrid];
 const main = { scrollTop: 0 };
 const dom = { videoGrid: browseGrid, theaterGrid, breadcrumb: new FakeEl("div") };
@@ -494,18 +497,54 @@ const state = {
 };
 """
 
-_BENTO_SCENARIO = r"""
+# ResizeObserver as a browser runs it. settle() is a rendering step: it reports every observed
+# element whose content box changed since its last report, and the first report is measured
+# against 0x0, so observe() on a laid-out element reports it once and a hidden one not at all.
+# The height stands in for the grid's row spans: it changes whenever any of them does.
+_RESIZE_OBSERVER = r"""
+const resizeObservers = [];
+class ResizeObserver {
+  constructor(cb) { this.cb = cb; this.reported = new Map(); resizeObservers.push(this); }
+  observe(el) { this.reported.set(el, "0x0"); }
+}
+const rowSpanOf = (el) => parseInt(String(el.style.gridRowEnd || "span 1").replace("span ", ""), 10) || 1;
+function settle() {
+  for (const ro of resizeObservers) {
+    const entries = [];
+    for (const [el, last] of ro.reported) {
+      const width = el.clientWidth, height = width ? el.children.reduce((h, t) => h + rowSpanOf(t), 0) : 0;
+      if (`${width}x${height}` === last) continue;
+      ro.reported.set(el, `${width}x${height}`);
+      entries.push({ target: el, contentRect: { width, height } });
+    }
+    if (entries.length) ro.cb(entries, ro);
+  }
+}
+"""
+
+_NO_RESIZE_OBSERVER = r"""
+const settle = () => {};                            // no observer: nothing reports a new size
+"""
+
+_BENTO_HELPERS = r"""
 const spans = (g) => g.children.map(spanOf);
 const tracks = (g) => getComputedStyle(g).gridTemplateColumns.split(" ").length;
 function renderInto(grid, tile, cols, view, fallback) {   // what renderVideoGrid / renderTheater do
   grid.appendChild(tile);
   bentoSpan(tile, bentoTileWidth(grid, applyBentoCols(tile, cols, view, fallback)));
 }
-const resize = (grid, explicit) => { grid.explicit = explicit; fireWindow("resize"); flushTimers(); };
+const renderFolder = (paths) => paths.forEach((p) =>
+  renderInto(browseGrid, new FakeTile("video-card", p), state.currentFolderLayouts[p]?.tileCols, "browse"));
+"""
+
+_BENTO_SCENARIO = _BENTO_HELPERS + r"""
+// A window resize changes the grids' width: the window's resize event fires, and at the next
+// rendering step the observer (where there is one) reports the new width.
+const resize = (grid, explicit) => { grid.explicit = explicit; fireWindow("resize"); settle(); flushTimers(); };
 const out = {};
 
-["F/a.mp4", "F/b.mp4", "F/wide.mp4", "F/c.mp4", "F/d.mp4"].forEach((p) =>
-  renderInto(browseGrid, new FakeTile("video-card", p), state.currentFolderLayouts[p]?.tileCols, "browse"));
+renderFolder(["F/a.mp4", "F/b.mp4", "F/wide.mp4", "F/c.mp4", "F/d.mp4"]);
+settle(); flushTimers();                     // first paint
 out.browseWide = spans(browseGrid);
 resize(browseGrid, 2);
 out.browseNarrow = spans(browseGrid);
@@ -532,12 +571,17 @@ console.log(JSON.stringify(out));
 """
 
 
-@pytest.fixture(scope="module")
-def bento_run(tmp_path_factory):
+def _run_bento(tmp_path, observer, scenario):
+    return _run_node(tmp_path, _FAKE_DOM, _BENTO_DOM, _RESIZE_OBSERVER if observer else _NO_RESIZE_OBSERVER,
+                     _app_section("Bento grid"), _app_section("Navigation"), scenario)
+
+
+# Every browser the app targets has ResizeObserver; "window" is the fallback without it.
+@pytest.fixture(scope="module", params=["observer", "window"])
+def bento_run(request, tmp_path_factory):
     if NODE is None:
         pytest.skip("node is not on PATH")
-    return _run_node(tmp_path_factory.mktemp("bento"), _FAKE_DOM, _BENTO_DOM, _app_section("Bento grid"),
-                     _app_section("Navigation"), _BENTO_SCENARIO)
+    return _run_bento(tmp_path_factory.mktemp("bento"), request.param == "observer", _BENTO_SCENARIO)
 
 
 def test_window_resize_reclamps_bento_spans_against_the_template_not_implicit_columns(bento_run):
@@ -562,6 +606,103 @@ def test_a_bento_grid_hidden_during_the_resize_is_reclamped_when_shown(bento_run
     # ...and fixed the moment Browse is shown again, which re-renders nothing.
     assert got["browseShownAgain"] == [1, 1, 2, 1, 1]
     assert got["browseShownAgainTracks"] == 2
+
+
+# The grid's width changes with NO window resize: toggling the sidebar (init collapses it at
+# tablet width) narrows or widens #main, and only the grid's own size says so.
+_SIDEBAR_SCENARIO = _BENTO_HELPERS + r"""
+const passes = [];                           // every re-clamp, by grid
+const realReclamp = reclampBentoGrid;
+reclampBentoGrid = (grid) => { passes.push(grid === browseGrid ? "browse" : "theater"); return realReclamp(grid); };
+const sidebar = (explicit) => { browseGrid.explicit = explicit; settle(); flushTimers(); };
+const rows = (g) => g.children.map((t) => t.style.gridRowEnd);
+const out = { windowResizeListeners: (winListeners.resize || []).length };
+
+browseGrid.explicit = 3;                     // sidebar collapsed: 3 tracks, the wide card fills a row
+renderFolder(["F/a.mp4", "F/b.mp4", "F/wide.mp4", "F/c.mp4", "F/d.mp4"]);
+settle(); flushTimers();                     // first paint
+const paintedRows = rows(browseGrid);
+passes.length = 0;
+sidebar(2);                                  // expand
+out.expanded = spans(browseGrid);
+out.expandedTracks = tracks(browseGrid);
+sidebar(3);                                  // collapse
+out.collapsed = spans(browseGrid);
+out.sidebarPasses = passes.splice(0);
+
+// Row spans change (a thumbnail loads) and so does the grid's height - its width does not.
+browseGrid.children[0].style.gridRowEnd = "span 40";
+settle(); flushTimers();
+settle(); flushTimers();                     // ...nor does the height a re-clamp would produce
+out.heightOnlyPasses = passes.splice(0);
+
+// A width that comes back where it started within the debounce still re-clamps: tiles
+// re-spanned at the in-between width (the tile above) must not keep that height.
+browseGrid.explicit = 2; settle();
+browseGrid.explicit = 3; settle();
+flushTimers();
+out.roundTripPasses = passes.splice(0);
+out.rowsRestored = JSON.stringify(rows(browseGrid)) === JSON.stringify(paintedRows);
+
+// Opening another folder rebuilds the tiles in the same container, which stays observed.
+browseGrid.innerHTML = "";
+renderFolder(["F/x.mp4", "F/wide.mp4"]);
+sidebar(2);
+out.rebuilt = spans(browseGrid);
+out.observed = resizeObservers.flatMap((ro) => [...ro.reported.keys()])
+  .map((el) => (el === browseGrid ? "browse" : el === theaterGrid ? "theater" : "other"));
+passes.length = 0;
+
+// The folder list is not a bento grid: nothing to re-clamp there.
+browseGrid.classList.remove("bento");
+sidebar(3);
+out.homePasses = passes.splice(0);
+browseGrid.classList.add("bento");
+sidebar(2);
+passes.length = 0;
+
+// Browse is hidden while the width changes, then shown: switchView re-clamps it at once, and
+// the observer then reports it shown at the width that re-clamp already used.
+switchView("theater"); settle(); flushTimers();
+browseGrid.explicit = 3; settle(); flushTimers();
+passes.length = 0;
+switchView("browse");
+out.shownSpans = spans(browseGrid);
+settle(); flushTimers();
+out.shownPasses = passes.splice(0);
+console.log(JSON.stringify(out));
+"""
+
+
+@pytest.fixture(scope="module")
+def sidebar_run(tmp_path_factory):
+    if NODE is None:
+        pytest.skip("node is not on PATH")
+    return _run_bento(tmp_path_factory.mktemp("sidebar"), True, _SIDEBAR_SCENARIO)
+
+
+def test_a_bento_grid_reclamps_when_its_width_changes_without_a_window_resize(sidebar_run):
+    got = sidebar_run
+    # Expanding the sidebar at tablet width took the grid from 3 tracks to 2 and left the
+    # wide card 3 wide, packing neighbours into a 50px implicit column (the R01 layout).
+    assert got["expanded"] == [1, 1, 2, 1, 1], "the sidebar narrowed the grid and nothing re-clamped"
+    assert got["expandedTracks"] == 2, "a span wider than the grid is creating implicit columns"
+    assert got["collapsed"] == [1, 1, 3, 1, 1], "widening must give the stored size back"
+    assert got["sidebarPasses"] == ["browse", "browse"]
+    assert got["windowResizeListeners"] == 0, "the observer sees every width a window resize changes"
+
+
+def test_the_bento_grid_observer_reacts_to_width_only_and_survives_rebuilds(sidebar_run):
+    got = sidebar_run
+    # A re-clamp changes row spans, i.e. the grid's height. Reacting to that would loop.
+    assert got["heightOnlyPasses"] == []
+    assert got["roundTripPasses"] == ["browse"], "one debounced pass, even back at the start width"
+    assert got["rowsRestored"], "a tile re-spanned at the in-between width kept that height"
+    assert got["rebuilt"] == [1, 2], "a rebuilt grid stopped being re-clamped"
+    assert got["observed"] == ["browse", "theater"], "observe the two containers, never the tiles"
+    assert got["homePasses"] == []
+    assert got["shownSpans"] == [1, 3]
+    assert got["shownPasses"] == ["browse"], "switchView's re-clamp was repeated when the grid was shown"
 
 
 def test_main_reserves_its_scrollbar_gutter():

@@ -284,9 +284,10 @@ function switchView(view) {
   state.currentView = view;
   $$(".view").forEach((v) => v.classList.remove("active"));
   $(`#view-${view}`).classList.add("active");
-  // A window resize skips grids in hidden views (no tracks to clamp against), so their spans
-  // still fit the old width. The theater re-renders on return (loadTheater); Browse with a
-  // folder open does not — re-clamp it now, before scroll is restored against the layout.
+  // A width change can't re-clamp a grid in a hidden view (no tracks to clamp against), so its
+  // spans still fit the old width. The theater re-renders on return (loadTheater); Browse with
+  // a folder open does not. The grid observer (Bento grid) would catch it only after its
+  // debounce — re-clamp now, before scroll is restored against the layout.
   if (wasHidden && view === "browse" && state.currentFolder) reclampBentoGrid(dom.videoGrid);
   $$(".nav-btn").forEach((b) => b.classList.remove("active"));
   $(`.nav-btn[data-view="${view}"]`)?.classList.add("active");
@@ -731,6 +732,7 @@ function reapplyBentoCols(el, trackCount) {
 // was, and re-clamped when its view is shown again (switchView).
 function reclampBentoGrid(grid) {
   if (!grid || !gridTracks(grid).tracks.length) return;
+  bentoGridWidth.set(grid, grid.clientWidth);   // the observer's report of this width is not news
   const tiles = [...grid.children].filter((el) => el.matches(".video-card, .theater-cell"));
   const dragged = (el) => bentoResize && bentoResize.card === el;   // the drag owns its span
   const before = tiles.map((el) => el.style.gridColumnEnd);
@@ -742,11 +744,50 @@ function reclampBentoGrid(grid) {
   tiles.forEach((el) => { if (!dragged(el)) bentoSpan(el); });
 }
 
+// Re-clamp whenever a grid's WIDTH changes, whatever changed it: the window, the sidebar
+// (collapsing it fires no window resize, and init collapses it at tablet width), a view being
+// shown. One ResizeObserver watches the two grid containers. Renders rebuild their children
+// but never replace the containers, so observing them once keeps a rebuilt grid observed; the
+// tiles themselves are never observed.
+// Only a width change counts. A re-clamp's own output is new row spans, i.e. a new HEIGHT, so
+// reacting to height would loop. It must also never change the width, which is why #main
+// reserves its scrollbar gutter (styles.css): otherwise a re-clamp that makes the content
+// overflow adds a scrollbar, the grid narrows, and the next re-clamp can remove it again.
+// clientWidth on both sides (here and in reclampBentoGrid) so the two compare like for like;
+// a re-clamp records the width it used, so switchView's immediate re-clamp isn't repeated
+// when the observer then reports the grid being shown. Debounced: a sidebar transition
+// reports a new width every frame.
+const bentoGridWidth = new WeakMap();   // grid -> last width seen (0 while its view is hidden)
+const bentoReclampDue = new Set();
 let bentoResizeTimer;
-window.addEventListener("resize", () => {
+
+function scheduleBentoReclamp(grids) {
+  grids.forEach((g) => bentoReclampDue.add(g));
   clearTimeout(bentoResizeTimer);
-  bentoResizeTimer = setTimeout(() => $$(".video-grid.bento, .theater-grid").forEach(reclampBentoGrid), 150);
-});
+  bentoResizeTimer = setTimeout(() => {
+    const due = [...bentoReclampDue];
+    bentoReclampDue.clear();
+    // Checked when it runs: Browse's grid is only bento while a folder is open.
+    due.filter((g) => g.matches(".video-grid.bento, .theater-grid")).forEach(reclampBentoGrid);
+  }, 150);
+}
+
+if (typeof ResizeObserver === "function") {
+  const bentoGridObserver = new ResizeObserver((entries) => {
+    const resized = [];
+    for (const { target } of entries) {
+      const width = target.clientWidth;
+      if (width === (bentoGridWidth.get(target) || 0)) continue;   // height only
+      bentoGridWidth.set(target, width);
+      if (width > 0) resized.push(target);                         // 0 = view hidden
+    }
+    if (resized.length) scheduleBentoReclamp(resized);
+  });
+  [dom.videoGrid, dom.theaterGrid].forEach((g) => bentoGridObserver.observe(g));
+} else {
+  // No ResizeObserver: a window resize is the only width change there is to see.
+  window.addEventListener("resize", () => scheduleBentoReclamp([dom.videoGrid, dom.theaterGrid]));
+}
 
 // ── Render Video Grid ────────────────────────────────────────
 function renderVideoGrid(videos) {
