@@ -21,8 +21,8 @@ import socket
 import tempfile
 import threading
 import time
+from functools import lru_cache
 from flask import Flask, jsonify, request, send_file, Response, send_from_directory
-from flask_cors import CORS
 
 try:
     import yt_dlp
@@ -30,8 +30,9 @@ try:
 except ImportError:
     YT_DLP_AVAILABLE = False
 
+# No CORS: the SPA is served from this same origin and never needs it. A blanket
+# CORS(app) let any website the user visited read and write this API.
 app = Flask(__name__, static_folder="static", static_url_path="")
-CORS(app)
 
 
 # ── LAN-only guard ─────────────────────────────────────────────
@@ -57,6 +58,68 @@ def _lan_only():
             return jsonify({"error": "Access restricted to local network"}), 403
     except ValueError:
         return jsonify({"error": "Invalid remote address"}), 403
+
+
+# ── Same-origin guard ──────────────────────────────────────────
+# The IP check above can't tell the user's browser apart from a web page it is
+# visiting: both arrive from 127.0.0.1 or the LAN. Two browser-driven attacks remain:
+#  - DNS rebinding: evil.example re-resolves to 127.0.0.1 and then talks to this API
+#    as its own origin. The browser still sends `Host: evil.example`, so only this
+#    machine's names and local IP literals are accepted as Host.
+#  - Cross-site writes: any page can POST/DELETE here without reading the reply.
+#    Browsers send Origin (and Sec-Fetch-Site) on those, so a state-changing request
+#    must come from this app's own origin.
+# Clients that send no Host / Origin header (curl, scripts) are not browsers and are
+# left to the IP guard.
+_STATE_CHANGING_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+_HOST_HEADER_RE = re.compile(r"^(?:\[([0-9A-Fa-f:.]+)\]|([A-Za-z0-9._-]+))(?::\d{1,5})?$")
+
+
+@lru_cache(maxsize=1)
+def _own_hostnames():
+    """Names this machine answers to. Extra names (a router DNS alias, a hosts-file
+    entry) can be allowed with VIDCOL_ALLOWED_HOSTS=media.lan,nas.home."""
+    names = {"localhost"}
+    try:
+        host = socket.gethostname().strip().rstrip(".").lower()
+        if host:
+            names.update({host, host + ".local"})
+        fqdn = socket.getfqdn().strip().rstrip(".").lower()
+        if fqdn:
+            names.add(fqdn)
+    except OSError:
+        pass
+    extra = os.environ.get("VIDCOL_ALLOWED_HOSTS", "")
+    names.update(h.strip().rstrip(".").lower() for h in extra.split(",") if h.strip())
+    return frozenset(names)
+
+
+def _host_allowed(host):
+    """localhost, a loopback/private/link-local IP literal, or one of our own names."""
+    m = _HOST_HEADER_RE.match(host)
+    if not m:
+        return False
+    name = (m.group(1) or m.group(2)).rstrip(".").lower()
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        # A bracketed Host must be an IPv6 literal; anything else is a name.
+        return m.group(1) is None and (name == "localhost" or name in _own_hostnames())
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+@app.before_request
+def _same_origin_only():
+    host = request.environ.get("HTTP_HOST", "")
+    if host and not _host_allowed(host):
+        return jsonify({"error": "Unrecognised Host header"}), 403
+    if request.method in _STATE_CHANGING_METHODS:
+        origin = request.headers.get("Origin")
+        own = f"{request.scheme}://{host or request.host}".lower()
+        if origin is not None and origin.strip().lower() != own:
+            return jsonify({"error": "Cross-origin request refused"}), 403
+        if request.headers.get("Sec-Fetch-Site", "").strip().lower() == "cross-site":
+            return jsonify({"error": "Cross-site request refused"}), 403
 
 # ── Configuration ──────────────────────────────────────────────
 DATA_DIR = Path(os.environ.get("VIDCOL_DATA_DIR") or (Path(__file__).resolve().parent / "data"))
