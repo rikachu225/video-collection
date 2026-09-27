@@ -872,6 +872,84 @@ def test_delete_clears_the_fetched_copy_but_not_the_user_file(tmp_path, monkeypa
     assert not server._icon_miss_marker("hulu").exists()
 
 
+# ── Service icons: staleness (revalidation instead of a 7-day cache) ──
+def test_an_icon_is_revalidated_with_a_strong_etag(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    (server.SERVICE_ICONS_AUTO / "netflix.png").write_bytes(PNG)
+    res = client.get("/api/service-icon/netflix")
+    assert res.status_code == 200 and res.data == PNG
+    assert res.headers["Cache-Control"] == "no-cache"
+    assert res.headers["X-Content-Type-Options"] == "nosniff"
+    etag = res.headers["ETag"]
+    assert etag.startswith('"')                          # strong, not W/"..."
+
+    again = client.get("/api/service-icon/netflix", headers={"If-None-Match": etag})
+    assert again.status_code == 304 and again.data == b""
+    assert again.headers["X-Content-Type-Options"] == "nosniff"
+    assert "sandbox" in again.headers["Content-Security-Policy"]
+
+
+def test_a_refreshed_icon_is_served_despite_the_old_etag(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", PNG)}))
+    old_etag = client.get("/api/service-icon/netflix").headers["ETag"]
+
+    newer = b"\x89PNG\r\n\x1a\n" + b"y" * 64
+    monkeypatch.setattr(server, "_icon_http_get", _fake_fetch({"apple-touch-icon.png": ("image/png", newer)}))
+    client.delete("/api/service-icon/netflix")          # Settings > Refresh Icons
+    res = client.get("/api/service-icon/netflix", headers={"If-None-Match": old_etag})
+    assert res.status_code == 200 and res.data == newer
+    assert res.headers["ETag"] != old_etag
+
+
+def test_a_dropped_in_icon_beats_the_old_etag_even_with_identical_size_and_mtime(tmp_path, monkeypatch):
+    import os
+    server, client = make_client(tmp_path, monkeypatch)
+    fetched = server.SERVICE_ICONS_AUTO / "netflix.png"
+    fetched.write_bytes(PNG)
+    old_etag = client.get("/api/service-icon/netflix").headers["ETag"]
+
+    mine = server.SERVICE_ICONS_DIR / "netflix.png"
+    mine.write_bytes(b"\x89PNG\r\n\x1a\n" + b"M" * 64)       # same length as PNG
+    st = fetched.stat()
+    os.utime(mine, ns=(st.st_atime_ns, st.st_mtime_ns))      # e.g. a copy that kept its mtime
+    res = client.get("/api/service-icon/netflix", headers={"If-None-Match": old_etag})
+    assert res.status_code == 200 and res.data == mine.read_bytes()
+
+
+def _save_customs(client, *customs):
+    return _post(client, [dict(c, custom=True) for c in customs])
+
+
+def test_repointing_a_service_to_another_site_drops_its_fetched_icon(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com/home"})
+    (server.SERVICE_ICONS_AUTO / "news.png").write_bytes(PNG)
+    server._icon_miss_marker("news").write_text("", encoding="utf-8")
+
+    # same site, different page: the icon only depends on the origin, so it stays
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://A.example.com/other"})
+    assert (server.SERVICE_ICONS_AUTO / "news.png").exists()
+
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://b.example.com"})
+    assert not (server.SERVICE_ICONS_AUTO / "news.png").exists()
+    assert not server._icon_miss_marker("news").exists()
+
+
+def test_removing_a_service_drops_its_fetched_icon_but_never_a_drop_in(tmp_path, monkeypatch):
+    server, client = make_client(tmp_path, monkeypatch)
+    _save_customs(client, {"id": "news", "name": "News", "url": "https://a.example.com"},
+                  {"id": "blog", "name": "Blog", "url": "https://blog.example.com"})
+    (server.SERVICE_ICONS_AUTO / "news.png").write_bytes(PNG)
+    (server.SERVICE_ICONS_AUTO / "blog.png").write_bytes(PNG)
+    (server.SERVICE_ICONS_DIR / "news.png").write_bytes(PNG)      # the user's own file
+
+    _save_customs(client, {"id": "blog", "name": "Blog", "url": "https://blog.example.com"})
+    assert not (server.SERVICE_ICONS_AUTO / "news.png").exists()
+    assert (server.SERVICE_ICONS_AUTO / "blog.png").exists()      # unchanged service kept
+    assert (server.SERVICE_ICONS_DIR / "news.png").exists()
+
+
 def test_candidate_order_prefers_declared_sizes(tmp_path, monkeypatch):
     server, _ = make_client(tmp_path, monkeypatch)
     html = (b'<html><head>'

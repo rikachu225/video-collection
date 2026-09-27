@@ -1219,6 +1219,23 @@ def _icon_miss_marker(service_id):
     return SERVICE_ICONS_AUTO / f"{service_id}.miss"
 
 
+def _clear_fetched_icon(service_id):
+    """Remove the fetched copy and the miss marker. Never the user's drop-in."""
+    removed = 0
+    for ext in _ICON_EXTS + (".miss",):
+        candidate = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
+        if candidate.exists():
+            candidate.unlink(missing_ok=True)
+            removed += 1
+    return removed
+
+
+def _icon_origin(url):
+    """The fetched icon depends only on this (see _icon_candidates)."""
+    parsed = urlparse(url)
+    return f"{parsed.scheme}://{parsed.netloc}".lower()
+
+
 _icon_locks = {}
 _icon_locks_guard = threading.Lock()
 
@@ -1306,8 +1323,18 @@ def service_icon(service_id):
     if path is None:
         return jsonify({"error": "No icon found"}), 404
 
-    response = send_file(path)
-    response.headers["Cache-Control"] = "public, max-age=604800"
+    try:
+        st = path.stat()
+    except OSError:                          # removed by a DELETE since the lookup
+        return jsonify({"error": "No icon found"}), 404
+    # Revalidate on every use instead of caching for a week: a strong ETag over WHICH
+    # file this is (drop-in vs fetched) plus its size and mtime_ns means a refetch or a
+    # newly dropped-in file shows on the next render — no client-side cache-bust — and
+    # an unchanged icon costs one 304.
+    etag = hashlib.sha256(
+        f"{path.parent.name}/{path.name}:{st.st_size}:{st.st_mtime_ns}".encode()).hexdigest()[:32]
+    response = send_file(path, etag=etag)
+    response.headers["Cache-Control"] = "no-cache"
     # A cached icon is a REMOTE body from a user-added https host. An SVG served as
     # image/svg+xml is an active document under direct navigation — script in it would
     # run in our origin, the same primitive _validate_service_url blocks for hrefs.
@@ -1324,13 +1351,7 @@ def clear_service_icon(service_id):
     user drop-in — that file is the user's, not ours."""
     if not _SERVICE_ID_RE.match(service_id or ""):
         return jsonify({"error": "Bad service id"}), 400
-    removed = 0
-    for ext in _ICON_EXTS + (".miss",):
-        candidate = SERVICE_ICONS_AUTO / f"{service_id}{ext}"
-        if candidate.exists():
-            candidate.unlink(missing_ok=True)
-            removed += 1
-    return jsonify({"status": "ok", "removed": removed})
+    return jsonify({"status": "ok", "removed": _clear_fetched_icon(service_id)})
 
 
 # ── API: Streaming Services ──────────────────────────────────────
@@ -1366,10 +1387,19 @@ def save_streaming():
         cleaned.append(svc)
     _assign_service_ids(cleaned)
 
+    before = {s["id"]: _icon_origin(s["url"]) for s in _streaming_services()}
     config = _load_config()
     config["streamingServices"] = cleaned
     _save_config(config)
-    return jsonify({"services": _streaming_services()})
+    services = _streaming_services()
+    # The icon cache is keyed by id. A service re-pointed at another site, or removed
+    # (its id may be reused by a later custom entry), must not keep the old site's icon
+    # or its miss marker. The user's own drop-in is never touched.
+    after = {s["id"]: _icon_origin(s["url"]) for s in services}
+    for sid, origin in before.items():
+        if after.get(sid) != origin:
+            _clear_fetched_icon(sid)
+    return jsonify({"services": services})
 
 
 # ── API: AI Assistant Config (BYOK) ───────────────────────────
