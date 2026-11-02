@@ -90,7 +90,7 @@ Then open **http://localhost:7777** and add your video folders in Settings.
 
 ## 📋 Requirements
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **ffmpeg** (optional, for thumbnail generation and codec remuxing)
 - **yt-dlp** (optional, for URL downloads — installed by default)
 - **google-genai + a Google Gemini API key** (optional, only for the AI assistant)

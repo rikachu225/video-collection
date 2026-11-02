@@ -36,7 +36,7 @@ fi
 
 # Check Python
 if ! command -v python3 &> /dev/null && ! command -v python &> /dev/null; then
-    echo "  [ERROR] Python not found. Install Python 3.10+ first."
+    echo "  [ERROR] Python not found. Install Python 3.11+ first."
     exit 1
 fi
 

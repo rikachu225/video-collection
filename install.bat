@@ -18,7 +18,7 @@ if %ERRORLEVEL% neq 0 (
     where winget >nul 2>&1
     if !ERRORLEVEL! neq 0 (
         echo  [ERROR] Neither Python nor winget found.
-        echo          Install Python 3.10+ from https://python.org/downloads
+        echo          Install Python 3.11+ from https://python.org/downloads
         pause
         exit /b 1
     )
