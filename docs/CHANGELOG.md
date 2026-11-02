@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased - 2026-11-02
+### Changed
+- **Python 3.11 is now the minimum.** yt-dlp 2026.10.26 requires it, and yt-dlp has to keep updating as sites change, so pinning an older release was not an option. CI now runs Python 3.11 and 3.12 on Ubuntu, Windows and macOS. Python 3.10 installs fail when pip reaches `yt-dlp`.
+- yt-dlp 2026.8.19 -> 2026.10.26. google-genai 2.25.0 -> 2.33.0.
+
 ## v2.8.3 - 2026-09-27
 ### Security
 - **No more CORS: browser requests must come from the app's own origin `[MED]`.** `CORS(app)` let any website the user visited read and write this API, and the IP-based LAN guard can't tell a hostile page from the app — both arrive from the user's own browser, so from `127.0.0.1` or the LAN. `flask-cors` is removed from `requirements.txt`, and a new `_same_origin_only` guard runs after the LAN guard. The `Host` header must be `localhost`, a loopback/private/link-local IP literal, or this machine's own name (hostname, `<hostname>.local`, FQDN, and for a fully qualified hostname such as `media-box.example.lan` also `media-box` and `media-box.local`, the name mDNS advertises) — that blocks DNS rebinding. `POST`/`PUT`/`PATCH`/`DELETE` are refused when `Origin` differs from the app's own `scheme://host` or `Sec-Fetch-Site` is `cross-site` — that blocks cross-site writes. Requests that send neither header (curl, scripts) are left to the IP guard. Opening the app by LAN IP, `localhost`, `127.0.0.1`, `[::1]` or the desktop window is unaffected; any other local name (a router DNS alias, a hosts-file entry, a monitor's `host.docker.internal`) now gets a 403 until it is listed in `VIDCOL_ALLOWED_HOSTS=media.lan,nas.home`. README's Security Notice now documents this.
