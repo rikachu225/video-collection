@@ -1,6 +1,7 @@
 """Agent: folder creation (with a location prompt) and bento tile sizing."""
 import json
 import importlib
+from pathlib import Path
 
 import ai_agent
 from ai_agent import TOOL_NAMES, execute_tool, Sink
@@ -57,6 +58,15 @@ def test_prompt_distinguishes_workspace_from_theater_layout():
 
 def test_default_model_is_the_agentic_flash():
     assert ai_agent.DEFAULT_MODEL == "gemini-3.6-flash"
+
+
+def test_example_config_model_is_served_on_api_v1():
+    # google-genai 3.x talks to Gemini API v1, which 404s the `-latest` aliases
+    # ("Model is not found ... for api version v1", measured 2026-11-26). Fresh installs
+    # copy this file to data/config.json, so it must not pick a model v1 can't serve.
+    example = Path(ai_agent.__file__).resolve().parent / "data" / "config.example.json"
+    model = ai_agent.get_model(json.loads(example.read_text(encoding="utf-8")))
+    assert not model.endswith("-latest"), model
 
 
 # ── create_folder ──

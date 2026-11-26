@@ -4,6 +4,10 @@
 ### Changed
 - **Python 3.11 is now the minimum.** yt-dlp 2026.10.26 requires it, and yt-dlp has to keep updating as sites change, so pinning an older release was not an option. CI now runs Python 3.11 and 3.12 on Ubuntu, Windows and macOS. Python 3.10 installs fail when pip reaches `yt-dlp`.
 - yt-dlp 2026.8.19 -> 2026.10.26. google-genai 2.25.0 -> 2.33.0.
+- **google-genai 2.34.0 -> 3.6.1 (major).** 3.0 makes Gemini API `v1` the default (was `v1beta`), and `v1` does not serve the `gemini-flash-latest` / `gemini-pro-latest` aliases: the assistant answered `Assistant error: 404 NOT_FOUND ... Model is not found: models/gemini-flash-latest for api version v1`. The default model `gemini-3.6-flash` works on `v1`, including the assistant's tool declarations (checked live). `data/config.example.json` no longer sets `aiAssistant.model`, so fresh installs use the default, and a test keeps a `-latest` alias out of it. 3.x also replaces `httpx` with `httpx2`; nothing here imports `httpx`.
+
+### Upgrade note
+- If your `data/config.json` sets `aiAssistant.model` to `gemini-flash-latest` (the old example value) or another `-latest` alias, delete that line or set a versioned name such as `gemini-3.6-flash`, then restart the server.
 
 ## v2.8.3 - 2026-09-27
 ### Security
