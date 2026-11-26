@@ -13,7 +13,6 @@
   ],
   "geminiApiKey": "",
   "aiAssistant": {
-    "enabled": true,
-    "model": "gemini-flash-latest"
+    "enabled": true
   }
 }

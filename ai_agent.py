@@ -20,12 +20,11 @@ except ImportError:
 # back through the tool loop), so quiet that logger — real errors still surface.
 logging.getLogger("google_genai.types").setLevel(logging.ERROR)
 
-# "gemini-flash-latest" is an alias that auto-tracks Google's newest flash model, so the
-# assistant doesn't break when an older model is retired. Override per-install via aiAssistant.model.
-# Pinned to the agentic flash tier rather than the `gemini-flash-latest` alias: this assistant
-# is a multi-step tool-caller, and 3.6-flash is markedly stronger there (Terminal-Bench 2.1
-# 78.0 vs 54 for the lite tier) while using ~17% fewer output tokens per task. Override per
-# install via `aiAssistant.model`; switch back to `gemini-flash-latest` to auto-track releases.
+# Pinned to the agentic flash tier: this assistant is a multi-step tool-caller, and 3.6-flash
+# is markedly stronger there (Terminal-Bench 2.1 78.0 vs 54 for the lite tier) while using
+# ~17% fewer output tokens per task. Override per install via `aiAssistant.model`, with a
+# versioned model name: google-genai 3.x talks to Gemini API v1, which does not serve the
+# `gemini-flash-latest` / `gemini-pro-latest` aliases (404 "Model is not found").
 DEFAULT_MODEL = "gemini-3.6-flash"
 MAX_ITERATIONS = 5
 
